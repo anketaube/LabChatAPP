@@ -1,0 +1,4 @@
+scripts/*
+unicorns.csv
+*.log
+*.sh
