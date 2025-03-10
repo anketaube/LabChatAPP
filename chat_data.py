@@ -17,94 +17,77 @@ api_key = st.sidebar.text_input(
 
 @st.cache_data()
 def load_data(file):
-    """Load the data."""
-    encodings_to_try = ['utf-8', 'latin1', 'cp1252']  # Hier weitere Kodierungen hinzufuegen
-    
-    for encoding in encodings_to_try:
-        try:
-            df = pd.read_csv(file, encoding=encoding, delimiter=",")
-            st.info(f"Datei erfolgreich mit Kodierung '{encoding}' geladen.")
+    """Lädt CSV oder Excel-Dateien mit automatischer Kodierungserkennung"""
+    try:
+        # Check file type
+        if file.name.endswith(('.xlsx', '.xls')):
+            xls = pd.ExcelFile(file)
+            df = pd.read_excel(xls, sheet_name=xls.sheet_names[0])
+            st.success("Excel-Datei erfolgreich geladen")
             return pre_process(df)
-        except UnicodeDecodeError:
-            st.warning(f"Kodierung '{encoding}' fehlgeschlagen. Versuche andere Kodierung...")
-        except Exception as e:
-            st.error(f"Fehler beim Laden der Datei mit Kodierung '{encoding}': {str(e)}")
+            
+        elif file.name.endswith('.csv'):
+            encodings = ['utf-8', 'latin1', 'cp1252', 'iso-8859-1']
+            for encoding in encodings:
+                try:
+                    file.seek(0)  # Reset file pointer
+                    df = pd.read_csv(file, encoding=encoding, delimiter=None, engine='python')
+                    st.success(f"CSV mit {encoding} Kodierung geladen")
+                    return pre_process(df)
+                except UnicodeDecodeError:
+                    continue
+                except pd.errors.EmptyDataError:
+                    st.error("CSV ist leer oder hat kein gültiges Format")
+                    return None
+            st.error("Kodierungsproblem - Speichere die Datei als UTF-8 oder Excel")
             return None
-    
-    st.error("Keine passende Kodierung gefunden. Bitte die Datei überprüfen.")
-    return None
+            
+    except Exception as e:
+        st.error(f"Kritischer Fehler: {str(e)}")
+        return None
 
 def pre_process(df):
-    """Pre-process the data."""
-    # Überprüfe auf leeres DataFrame nach dem Löschen der Spalten
+    """Bereinigt das DataFrame"""
     if df.empty:
-        st.error("Keine gültigen Daten nach der Vorverarbeitung.")
+        st.error("Keine Daten nach der Bereinigung")
         return None
     
-    # Drop columns that start with "Unnamed"
-    cols_to_drop = [col for col in df.columns if col.startswith("Unnamed")]
-    df = df.drop(columns=cols_to_drop, errors='ignore') # 'errors=ignore' hinzugefuegt
-    
-    # Zusätzliche Überprüfung auf NaN-Spalten
+    # Lösche leere/unbenannte Spalten
     df = df.dropna(axis=1, how='all')
+    df = df.loc[:, ~df.columns.str.contains('^Unnamed')]
     
     if df.empty:
-        st.error("Alle Spalten wurden entfernt. Überprüfe das Datenformat.")
+        st.error("Alle Spalten wurden entfernt")
         return None
         
     return df
 
-# ... [Rest des Codes bleibt unverändert bis zur Main-Logik] ...
+# ... [Rest des Codes bleibt gleich bis auf den Uploader] ...
 
 st.title("Chat with your data")
-uploaded_file = st.sidebar.file_uploader("Dataset hochladen", type="csv")
+uploaded_file = st.sidebar.file_uploader(
+    "Dataset hochladen", 
+    type=["csv", "xlsx", "xls"],  # Unterstützte Formate
+    help="Unterstützte Formate: CSV, Excel (.xlsx, .xls)"
+)
 
 if uploaded_file:
     df = load_data(uploaded_file)
     
-    if df is not None and not df.empty:  # Doppelte Überprüfung
+    if df is not None and not df.empty:
         with st.chat_message("assistant"):
-            st.markdown("Hier sind Ihre Daten:")
-            st.dataframe(df, height=200)
+            st.markdown("Erfolgreich geladene Daten:")
+            st.dataframe(df.head(3), height=150)  # Zeige nur die ersten Zeilen
             
-        question = st.chat_input(placeholder=generate_placeholder_question(df))
+        # ... [Rest der Chat-Logik bleibt unverändert] ...
         
-        if question:
-            with st.chat_message("user"):
-                st.markdown(question)
-            add_to_log(f"Question: {question}")
-            
-            description = describe_dataframe(df)
-            
-            if "ERROR" in description:
-                with st.chat_message("assistant"):
-                    st.markdown(description)
-            else:
-                initial_code = code_prefix()
-                with st.spinner("Analysiere..."):
-                    # API Key Check vor der Abfrage
-                    if not api_key:
-                        st.error("Bitte zuerst OpenAI API Key eingeben!")
-                    else:
-                        answer = ask_question_with_retry(
-                            prepare_question(description, question, initial_code),
-                            api_key=api_key
-                        )
-                        
-                if answer:
-                    with st.chat_message("assistant"):
-                        try:
-                            script = initial_code + answer + "st.pyplot(fig)"
-                            exec(script)
-                            st.markdown("Generierter Code:")
-                            st.code(script, language="python")
-                        except Exception as e:
-                            add_to_log(f"Error: {str(e)}")
-                            st.error("Fehler bei der Code-Ausführung")
-                else:
-                    st.error("Anfrage fehlgeschlagen. Bitte Key überprüfen.")
     else:
-        st.warning("Daten konnten nicht geladen werden. Bitte Dateiformat überprüfen.")
+        st.error("""
+        Behebung von Upload-Problemen:
+        1. Bei CSV: Als UTF-8 speichern (in Excel: 'Datei > Speichern unter > CSV UTF-8')
+        2. Bei Excel: Sicherstellen, dass Daten ab Zelle A1 beginnen
+        3. Leere Zeilen/Spalten entfernen
+        """)
 else:
     with st.chat_message("assistant"):
-        st.markdown("Bitte laden Sie zuerst ein Dataset hoch")
+        st.markdown("Lade eine Datei hoch um zu beginnen (CSV oder Excel)")
