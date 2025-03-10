@@ -64,27 +64,27 @@ def full_text_search(df, query):
     except:
         return pd.DataFrame()
 
-def ask_question(prompt, context, api_key, model):
-    """Analysiert die Frage mit Datenkontext"""
+def ask_question(question, context, api_key, model):
+    """Verwendet ChatGPT zur Beantwortung der Frage mit Datenkontext"""
     try:
         client = OpenAI(api_key=api_key)
         
         prompt_text = f"""
-        Analysiere diese Frage im Kontext der Datenbank:
-        
-        Datenbankstruktur:
+        Du bist ein Datenexperte für die DNB-Datensätze.
+        Basierend auf dem gegebenen Kontext beantworte die Frage.
+
+        Kontext:
         {context}
-        
-        Frage: {prompt}
-        
-        Basierend auf der Frage, gib NUR die Datensetnamen als kommaseparierte Liste zurück.
-        Wenn keine passenden Datensets gefunden werden, antworte mit "Keine Treffer gefunden".
+
+        Frage: {question}
+
+        Gib eine ausführliche Antwort in ganzen Sätzen.
         """
         
         response = client.chat.completions.create(
             model=model,  # Dynamisches Modell
             messages=[{"role": "user", "content": prompt_text}],
-            temperature=0
+            temperature=0.7  # Etwas höhere Temperatur für kreativere Antworten
         )
         
         return response.choices[0].message.content
@@ -116,19 +116,19 @@ if uploaded_file:
                 st.subheader("Suchergebnisse")
                 st.dataframe(results[['datensetname', 'datenformat', 'kategorie 1', 'kategorie 2']])
                 
-                # GPT-Zusatzanalyse
+                # ChatGPT-Analyse der Ergebnisse
                 if api_key:
                     with st.spinner("Analysiere Treffer..."):
-                        # Erstelle Kontext aus Suchergebnissen, nicht aus gesamten Daten
-                        context = results[['datensetname', 'datenformat']].to_string(index=False)
-                        prompt = f"Welche dieser Datensets haben 'freie Objekte' im Kontext der Datenbank?"
-                        analysis = ask_question(prompt, context, api_key, chatgpt_model)
+                        # Formatiere die Daten für den Kontext
+                        context = results.to_string(index=False, columns=['datensetname', 'datenformat', 'kategorie 1', 'kategorie 2'])
                         
-                        if "Keine Treffer gefunden" not in analysis:
-                            st.write("Datensets mit 'freien Objekten':")
-                            st.write(analysis)
-                        else:
-                            st.write("Keine Datensets mit 'freien Objekten' gefunden.")
+                        # Generiere eine Frage an ChatGPT
+                        prompt = f"Basierend auf diesen Datensets: {context}\n\n{search_query}"
+                        
+                        # Sende die Frage an ChatGPT und zeige die Antwort an
+                        answer = ask_question(prompt, context, api_key, chatgpt_model)
+                        st.subheader("ChatGPT Antwort:")
+                        st.write(answer)
                 else:
                     st.warning("API-Key benötigt für Zusatzanalysen")
             else:
