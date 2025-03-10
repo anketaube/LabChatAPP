@@ -64,7 +64,7 @@ def full_text_search(df, query):
     except:
         return pd.DataFrame()
 
-def ask_question(question, context, api_key, model):
+def ask_question(prompt, context, api_key, model):
     """Analysiert die Frage mit Datenkontext"""
     try:
         client = OpenAI(api_key=api_key)
@@ -75,10 +75,10 @@ def ask_question(question, context, api_key, model):
         Datenbankstruktur:
         {context}
         
-        Frage: {question}
+        Frage: {prompt}
         
-        Antworte NUR mit einer kommaseparierten Liste der passenden Datensetnamen OHNE zusätzlichen Text.
-        Falls keine passenden Ergebnisse, antworte 'Keine Treffer gefunden'.
+        Basierend auf der Frage, gib NUR die Datensetnamen als kommaseparierte Liste zurück.
+        Wenn keine passenden Datensets gefunden werden, antworte mit "Keine Treffer gefunden".
         """
         
         response = client.chat.completions.create(
@@ -119,13 +119,16 @@ if uploaded_file:
                 # GPT-Zusatzanalyse
                 if api_key:
                     with st.spinner("Analysiere Treffer..."):
-                        context = f"""
-                        Gefundene Datensets ({len(results)}):
-                        {results[['datensetname', 'datenformat']].to_string(index=False)}
-                        """
-                        prompt = f"Fasse diese {len(results)} Treffer zum Suchbegriff '{search_query}' zusammen:"
-                        analysis = ask_question(prompt, context, api_key, chatgpt_model) # Modell-Übergabe
-                        st.write(analysis)
+                        # Erstelle Kontext aus Suchergebnissen, nicht aus gesamten Daten
+                        context = results[['datensetname', 'datenformat']].to_string(index=False)
+                        prompt = f"Welche dieser Datensets haben 'freie Objekte' im Kontext der Datenbank?"
+                        analysis = ask_question(prompt, context, api_key, chatgpt_model)
+                        
+                        if "Keine Treffer gefunden" not in analysis:
+                            st.write("Datensets mit 'freien Objekten':")
+                            st.write(analysis)
+                        else:
+                            st.write("Keine Datensets mit 'freien Objekten' gefunden.")
                 else:
                     st.warning("API-Key benötigt für Zusatzanalysen")
             else:
