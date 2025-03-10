@@ -17,14 +17,24 @@ api_key = st.sidebar.text_input(
 
 @st.cache_data()
 def load_data(file):
-    """Lädt CSV oder Excel-Dateien mit automatischer Kodierungserkennung"""
+    """Lädt CSV oder Excel-Dateien mit automatischer Fehlerbehandlung"""
     try:
         # Check file type
         if file.name.endswith(('.xlsx', '.xls')):
+            try:
+                import openpyxl  # Stelle sicher, dass openpyxl installiert ist
+            except ImportError:
+                st.error("Fehler: 'openpyxl' ist nicht installiert. Bitte installiere es mit 'pip install openpyxl'")
+                return None
+            
             xls = pd.ExcelFile(file)
-            df = pd.read_excel(xls, sheet_name=xls.sheet_names[0])
-            st.success("Excel-Datei erfolgreich geladen")
-            return pre_process(df)
+            try:
+                df = pd.read_excel(xls, sheet_name=xls.sheet_names[0])
+                st.success("Excel-Datei erfolgreich geladen")
+                return pre_process(df)
+            except Exception as e:
+                st.error(f"Fehler beim Lesen der Excel-Datei: {str(e)}")
+                return None
             
         elif file.name.endswith('.csv'):
             encodings = ['utf-8', 'latin1', 'cp1252', 'iso-8859-1']
