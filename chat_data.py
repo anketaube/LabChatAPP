@@ -7,13 +7,17 @@ import time
 
 LOG = "questions.log"
 
-# Add OpenAI API key input in sidebar
+# Konfiguration im Sidebar
 st.sidebar.title("Konfiguration")
 api_key = st.sidebar.text_input(
     "OpenAI API Key eingeben",
     type="password",
     help="Hol dir deinen Key von https://platform.openai.com/account/api-keys"
 )
+
+# Zeige das verwendete Sprachmodell im Sidebar an
+model_name = "gpt-3.5-turbo"  # Definiere den Modellnamen
+st.sidebar.markdown(f"Verwendetes Sprachmodell: **{model_name}**")
 
 @st.cache_data()
 def load_data(file):
@@ -82,7 +86,8 @@ def add_to_log(question):
 def ask_question(question, system="You are a data scientist.", api_key=None):
     """Ask a question and return the answer."""
     if not api_key:
-        raise ValueError("API Key fehlt")
+        st.error("Bitte gib zuerst deinen OpenAI API Key ein.")
+        return None  # Wichtig: Gib None zurück, um die Ausführung zu stoppen
     
     client = OpenAI(api_key=api_key)
     messages = [
@@ -91,7 +96,7 @@ def ask_question(question, system="You are a data scientist.", api_key=None):
     ]
     
     response = client.chat.completions.create(
-        model="gpt-3.5-turbo",
+        model=model_name,  # Verwende den definierten Modellnamen
         messages=messages,
         temperature=0,
         stop=["plt.show()", "st.pyplot(fig)"]
@@ -199,6 +204,7 @@ if uploaded_file:
                     if not api_key:
                         st.error("Bitte zuerst OpenAI API Key eingeben!")
                     else:
+                        # Überprüfe, ob ask_question eine Antwort liefert
                         answer = ask_question_with_retry(
                             prepare_question(description, question, initial_code),
                             api_key=api_key
@@ -216,8 +222,8 @@ if uploaded_file:
                             st.info("I could not generate code to answer this question. " +
                                     "Try asking it in a different way.")
                 else:
-                    add_to_log("Error: Request timed out.")
-                    st.markdown("Request timed out. Please wait and resubmit your question.")
+                    add_to_log("Error: Request timed out oder API Key fehlt.")
+                    st.markdown("Request timed out, API Key fehlt oder Frage konnte nicht beantwortet werden. Bitte Key überprüfen oder Frage anders formulieren.")
     else:
         st.error("""
         Behebung von Upload-Problemen:
