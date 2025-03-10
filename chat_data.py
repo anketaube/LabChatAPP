@@ -54,7 +54,33 @@ def full_text_search(df, query):
     except:
         return pd.DataFrame()
 
-# ... (Rest der vorhandenen Funktionen bleiben gleich) ...
+def ask_question(prompt, context, api_key):
+    """Analysiert die Frage mit Datenkontext"""
+    try:
+        client = OpenAI(api_key=api_key)
+        
+        prompt_text = f"""
+        Analysiere diese Frage im Kontext der Datenbank:
+        
+        Datenbankstruktur:
+        {context}
+        
+        Frage: {prompt}
+        
+        Antworte NUR mit einer kommaseparierten Liste der passenden Datensetnamen OHNE zusätzlichen Text.
+        Falls keine passenden Ergebnisse, antworte 'Keine Treffer gefunden'.
+        """
+        
+        response = client.chat.completions.create(
+            model="gpt-4-turbo",
+            messages=[{"role": "user", "content": prompt_text}],
+            temperature=0
+        )
+        
+        return response.choices[0].message.content
+    except Exception as e:
+        st.error(f"Fehler bei OpenAI API-Abfrage: {str(e)}")
+        return "Fehler bei der Anfrage."
 
 st.title("DNB-Datenset-Suche")
 
