@@ -18,18 +18,21 @@ api_key = st.sidebar.text_input(
 @st.cache_data()
 def load_data(file):
     """Load the data."""
-    try:
-        df = pd.read_csv(file, encoding="utf-8", delimiter=",")
-        if df.empty:
-            st.error("Die Datei ist leer oder enthält keine Daten.")
+    encodings_to_try = ['utf-8', 'latin1', 'cp1252']  # Hier weitere Kodierungen hinzufuegen
+    
+    for encoding in encodings_to_try:
+        try:
+            df = pd.read_csv(file, encoding=encoding, delimiter=",")
+            st.info(f"Datei erfolgreich mit Kodierung '{encoding}' geladen.")
+            return pre_process(df)
+        except UnicodeDecodeError:
+            st.warning(f"Kodierung '{encoding}' fehlgeschlagen. Versuche andere Kodierung...")
+        except Exception as e:
+            st.error(f"Fehler beim Laden der Datei mit Kodierung '{encoding}': {str(e)}")
             return None
-        return pre_process(df)
-    except pd.errors.EmptyDataError:
-        st.error("Fehler: Die CSV-Datei ist leer oder enthält keine gültigen Daten.")
-        return None
-    except Exception as e:
-        st.error(f"Fehler beim Laden der Datei: {str(e)}")
-        return None
+    
+    st.error("Keine passende Kodierung gefunden. Bitte die Datei überprüfen.")
+    return None
 
 def pre_process(df):
     """Pre-process the data."""
@@ -40,7 +43,7 @@ def pre_process(df):
     
     # Drop columns that start with "Unnamed"
     cols_to_drop = [col for col in df.columns if col.startswith("Unnamed")]
-    df = df.drop(columns=cols_to_drop)
+    df = df.drop(columns=cols_to_drop, errors='ignore') # 'errors=ignore' hinzugefuegt
     
     # Zusätzliche Überprüfung auf NaN-Spalten
     df = df.dropna(axis=1, how='all')
