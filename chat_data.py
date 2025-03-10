@@ -15,6 +15,16 @@ api_key = st.sidebar.text_input(
     help="Hol dir deinen Key von https://platform.openai.com/account/api-keys"
 )
 
+# ChatGPT Modell auswählen
+chatgpt_model = st.sidebar.selectbox(
+    "ChatGPT Modell wählen",
+    options=["gpt-3.5-turbo", "gpt-4-turbo"],
+    index=1, # Default auf gpt-4-turbo
+    help="Wähle das zu verwendende ChatGPT Modell"
+)
+
+st.sidebar.markdown(f"Verwendetes Modell: **{chatgpt_model}**")
+
 @st.cache_data()
 def load_data(file):
     """Lädt Excel-Dateien mit vollständiger Indexierung"""
@@ -54,7 +64,7 @@ def full_text_search(df, query):
     except:
         return pd.DataFrame()
 
-def ask_question(prompt, context, api_key):
+def ask_question(question, context, api_key, model):
     """Analysiert die Frage mit Datenkontext"""
     try:
         client = OpenAI(api_key=api_key)
@@ -65,14 +75,14 @@ def ask_question(prompt, context, api_key):
         Datenbankstruktur:
         {context}
         
-        Frage: {prompt}
+        Frage: {question}
         
         Antworte NUR mit einer kommaseparierten Liste der passenden Datensetnamen OHNE zusätzlichen Text.
         Falls keine passenden Ergebnisse, antworte 'Keine Treffer gefunden'.
         """
         
         response = client.chat.completions.create(
-            model="gpt-4-turbo",
+            model=model,  # Dynamisches Modell
             messages=[{"role": "user", "content": prompt_text}],
             temperature=0
         )
@@ -114,7 +124,7 @@ if uploaded_file:
                         {results[['datensetname', 'datenformat']].to_string(index=False)}
                         """
                         prompt = f"Fasse diese {len(results)} Treffer zum Suchbegriff '{search_query}' zusammen:"
-                        analysis = ask_question(prompt, context, api_key)
+                        analysis = ask_question(prompt, context, api_key, chatgpt_model) # Modell-Übergabe
                         st.write(analysis)
                 else:
                     st.warning("API-Key benötigt für Zusatzanalysen")
