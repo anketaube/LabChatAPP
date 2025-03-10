@@ -7,7 +7,7 @@ import time
 
 LOG = "questions.log"
 
-# Konfiguration im Sidebar
+# Add OpenAI API key input in sidebar
 st.sidebar.title("Konfiguration")
 api_key = st.sidebar.text_input(
     "OpenAI API Key eingeben",
@@ -124,28 +124,26 @@ def prepare_question(description, question, initial_code):
 Context:
 {description}
 Question: {question}
-Answer:
-{initial_code}
+Antwort:
+
 """
 
 def describe_dataframe(df):
     """Describe the dataframe."""
     description = []
-    description.append(f"The dataframe df has the following columns: {', '.join(df.columns)}.")
-    try:
-        if cols := check_categorical_variables(df):
-            return f"ERROR: All values in a categorical variable must be strings: {', '.join(cols)}."
-        for column in df.columns:
-            if df[column].dtype == "object" and len(df[column].unique()) < 10:
-                description.append(f"Column {column} has the following levels: {', '.join(df[column].dropna().unique())}.")
-            elif df[column].dtype == "int64" or df[column].dtype == "float64":
-                description.append(f"Column {column} is a numerical variable.")
-        description.append("Add a title to the plot.")
-        description.append("Label the x and y axes of the plot.")
-        description.append("Do not generate a new dataframe.")
-    except Exception as e:
-        add_to_log("Error: Unexpected error with the dataset.")
-        return "Unexpected error with the dataset."
+    description.append(f"Das Dataframe hat die folgenden Spalten: {', '.join(df.columns)}.")
+    
+    # Explizite Beschreibung jeder Spalte
+    for column in df.columns:
+        dtype = df[column].dtype
+        description.append(f"Die Spalte '{column}' hat den Datentyp {dtype}.")
+        if dtype == 'object':  # String-Spalten
+            unique_vals = df[column].unique()
+            description.append(f"Die Spalte '{column}' hat die folgenden eindeutigen Werte: {', '.join(map(str, unique_vals[:10]))}{'...' if len(unique_vals) > 10 else ''}.")  # Zeige max. 10 Werte
+        elif dtype in ['int64', 'float64']:  # Numerische Spalten
+            description.append(f"Die Spalte '{column}' hat den minimalen Wert {df[column].min()} und den maximalen Wert {df[column].max()}.")
+    
+    description.append("Bitte beantworte die Frage direkt basierend auf diesen Informationen.")
     return "\n".join(description)
 
 def check_categorical_variables(df):
@@ -167,9 +165,9 @@ fig, ax = plt.subplots(figsize=(6.4, 2.4))
 """
 
 def generate_placeholder_question(df):
-    return "Show the relationship between x and y."
+    return "Nenne mir alle Datensetnamen mit dem Datenformat METS/MOds"
 
-st.title("Chat with your data")
+st.title("Chat mit deinen Daten")
 uploaded_file = st.sidebar.file_uploader(
     "Dataset hochladen", 
     type=["csv", "xlsx", "xls"],  # Unterstützte Formate
@@ -198,7 +196,7 @@ if uploaded_file:
                 with st.chat_message("assistant"):
                     st.markdown(description)
             else:
-                initial_code = code_prefix()
+                initial_code = ""  # Leerer initial_code, da wir keine Visualisierungen erwarten
                 with st.spinner("Thinking..."):
                     # API Key Check vor der Abfrage
                     if not api_key:
@@ -207,23 +205,15 @@ if uploaded_file:
                         # Überprüfe, ob ask_question eine Antwort liefert
                         answer = ask_question_with_retry(
                             prepare_question(description, question, initial_code),
-                            api_key=api_key
+                            api_key=api_key,
+                            system="Du bist ein hilfreicher Assistent, der Fragen basierend auf dem gegebenen Kontext beantwortet."  # Angepasster System-Prompt
                         )
                         
                 if answer:
                     with st.chat_message("assistant"):
-                        script = initial_code + answer + "st.pyplot(fig)"
-                        try:
-                            exec(script)
-                            st.markdown("Here is the code used to create the plot:")
-                            st.code(script, language="python")
-                        except Exception as e:
-                            add_to_log("Error: Could not generate code to answer this question.")
-                            st.info("I could not generate code to answer this question. " +
-                                    "Try asking it in a different way.")
+                        st.markdown(answer)  # Gib die direkte Antwort aus
                 else:
-                    add_to_log("Error: Request timed out oder API Key fehlt.")
-                    st.markdown("Request timed out, API Key fehlt oder Frage konnte nicht beantwortet werden. Bitte Key überprüfen oder Frage anders formulieren.")
+                    st.error("Die Anfrage konnte nicht beantwortet werden.")
     else:
         st.error("""
         Behebung von Upload-Problemen:
