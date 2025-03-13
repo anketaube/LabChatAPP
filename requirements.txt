@@ -1,5 +1,6 @@
 llama-index
+llama-index-llms-ollama
+llama-index-embeddings-huggingface
 streamlit
 pandas
-openai
 sentence-transformers
