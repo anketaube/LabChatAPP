@@ -1,12 +1,13 @@
 import streamlit as st
 import pandas as pd
 from llama_index.core import VectorStoreIndex, Document, Settings
-from llama_index.embeddings.huggingface import HuggingFaceEmbedding
+from llama_index import HuggingFaceEmbedding
 from llama_index.llms.openai import OpenAI
 import os
 
 # Setze das Embedding-Modell
-Settings.embed_model = HuggingFaceEmbedding(model_name="BAAI/bge-small-en-v1.5")
+embed_model = HuggingFaceEmbedding(model_name="BAAI/bge-small-en-v1.5")
+Settings.embed_model = embed_model
 
 # Setze das LLM
 Settings.llm = OpenAI(model="gpt-3.5-turbo")
