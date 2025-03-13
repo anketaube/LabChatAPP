@@ -1,7 +1,7 @@
 import streamlit as st
 import pandas as pd
 from llama_index.core import VectorStoreIndex, Document, Settings
-from llama_index import HuggingFaceEmbedding
+from llama_index.embeddings.huggingface import HuggingFaceEmbedding
 from llama_index.llms.openai import OpenAI
 import os
 
