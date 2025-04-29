@@ -2,7 +2,7 @@ import streamlit as st
 import pandas as pd
 from openai import OpenAI
 
-# --- OpenAI API-Key aus Secrets laden (UI-Feld entfernen!) ---
+# API-Key aus Streamlit-Secrets laden (kein UI-Feld mehr)
 if "OPENAI_API_KEY" not in st.secrets:
     st.error("API-Key fehlt. Bitte in den Streamlit-Secrets hinterlegen.")
     st.stop()
@@ -21,23 +21,14 @@ st.sidebar.markdown(f"Verwendetes Modell: **{chatgpt_model}**")
 def load_data(file):
     try:
         xls = pd.ExcelFile(file)
-        df = pd.read_excel(
-            xls,
-            sheet_name=xls.sheet_names[0],
-            header=0,
-            skiprows=0,
-            na_filter=False
-        )
-        df['volltextindex'] = df.apply(
-            lambda row: ' | '.join(str(cell) for cell in row if pd.notnull(cell)),
-            axis=1
-        )
-        st.success(f"{len(df)} Zeilen erfolgreich indexiert")
-        # Spaltennamen vereinheitlichen
+        df = pd.read_excel(xls, sheet_name=xls.sheet_names[0], header=0, na_filter=False)
+        # Volltextindex für einfache Stichwortsuche
+        df['volltextindex'] = df.apply(lambda row: ' | '.join(str(cell) for cell in row if pd.notnull(cell)), axis=1)
         df.columns = df.columns.str.strip().str.lower()
+        st.success(f"{len(df)} Zeilen erfolgreich geladen und indexiert.")
         return df
     except Exception as e:
-        st.error(f"Fehler beim Laden: {str(e)}")
+        st.error(f"Fehler beim Laden der Excel-Datei: {e}")
         return None
 
 def full_text_search(df, query):
@@ -50,65 +41,62 @@ def full_text_search(df, query):
 def ask_question(question, context, model):
     try:
         client = OpenAI(api_key=api_key)
-        prompt_text = f"""
+        prompt = f"""
 Du bist ein Datenexperte für die DNB-Datensätze.
-Hier sind die Datensätze:
+Hier sind die Daten:
 {context}
 
-Beantworte folgende Frage ausschließlich auf Basis der Tabelle oben und antworte in ganzen Sätzen:
+Beantworte die folgende Frage basierend auf den Daten oben in ganzen Sätzen:
 {question}
 """
         response = client.chat.completions.create(
             model=model,
-            messages=[{"role": "user", "content": prompt_text}],
+            messages=[{"role": "user", "content": prompt}],
             temperature=0.3
         )
         return response.choices[0].message.content
     except Exception as e:
-        st.error(f"Fehler bei OpenAI API-Abfrage: {str(e)}")
+        st.error(f"Fehler bei OpenAI API-Abfrage: {e}")
         return "Fehler bei der Anfrage."
 
 st.title("DNB-Datenset-Suche")
 
-uploaded_file = st.sidebar.file_uploader(
-    "Excel-Datei hochladen",
-    type=["xlsx"],
-    help="Nur Excel-Dateien (.xlsx) mit der korrekten Struktur"
-)
+uploaded_file = st.sidebar.file_uploader("Excel-Datei hochladen", type=["xlsx"])
 
 if uploaded_file:
     df = load_data(uploaded_file)
     if df is not None:
         st.write(f"Geladene Datensätze: {len(df)}")
-        search_query = st.text_input(
-            "Suchbegriff oder Frage eingeben (z.B. 'Hochschulschriften' oder 'Wie viele Datensets zu Hochschulschriften gibt es?'):"
-        )
+        search_query = st.text_input("Suchbegriff oder Frage eingeben:")
+
         if search_query:
-            # Prüfe, ob es eine Frage ist (primitive Logik, kann erweitert werden)
-            is_question = any(search_query.strip().lower().startswith(w) for w in ["wie", "welche", "was", "zeig", "gibt", "nenn", "list", "zähl", "wieviele", "wieviel"])
+            # Einfache Heuristik, um zu erkennen, ob es eine Frage ist
+            question_words = ["wie", "was", "welche", "wann", "warum", "wo", "wieviel", "wieviele", "zähl", "nenn", "gibt", "zeige"]
+            is_question = any(search_query.lower().startswith(word) for word in question_words)
+
             if is_question:
-                # Kontext: ganze Tabelle als String (nur relevante Spalten)
+                # Ganze Tabelle als Kontext an das Sprachmodell geben
                 context = df.to_string(index=False)
                 with st.spinner("Frage wird analysiert..."):
                     answer = ask_question(search_query, context, chatgpt_model)
                     st.subheader("Antwort des Sprachmodells:")
                     st.write(answer)
             else:
-                # Stichwortsuche wie bisher
+                # Stichwortsuche
                 results = full_text_search(df, search_query)
                 if not results.empty:
                     st.subheader("Suchergebnisse")
                     display_cols = [col for col in ['datensetname', 'datenformat', 'kategorie 1', 'kategorie 2'] if col in results.columns]
                     st.dataframe(results[display_cols] if display_cols else results)
-                    # Optional: Sprachmodell noch ergänzend befragen
+                    # Optional: Sprachmodell mit Treffern befragen
                     context = results.to_string(index=False, columns=display_cols) if display_cols else results.to_string(index=False)
                     with st.spinner("Analysiere Treffer..."):
                         answer = ask_question(search_query, context, chatgpt_model)
-                        st.subheader("ChatGPT Antwort:")
+                        st.subheader("Ergänzende Antwort des Sprachmodells:")
                         st.write(answer)
                 else:
-                    st.warning("Keine Treffer gefunden")
+                    st.warning("Keine Treffer gefunden.")
     else:
-        st.info("Bitte laden Sie eine Excel-Datei hoch")
+        st.info("Bitte laden Sie eine Excel-Datei hoch.")
 else:
-    st.info("Bitte laden Sie eine Excel-Datei hoch")
+    st.info("Bitte laden Sie eine Excel-Datei hoch.")
