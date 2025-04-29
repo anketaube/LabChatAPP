@@ -2,7 +2,7 @@ import streamlit as st
 import pandas as pd
 from openai import OpenAI
 
-# API-Key aus Streamlit-Secrets laden
+# --- OpenAI API-Key aus Secrets laden (UI-Feld entfernen!) ---
 if "OPENAI_API_KEY" not in st.secrets:
     st.error("API-Key fehlt. Bitte in den Streamlit-Secrets hinterlegen.")
     st.stop()
@@ -19,7 +19,6 @@ st.sidebar.markdown(f"Verwendetes Modell: **{chatgpt_model}**")
 
 @st.cache_data()
 def load_data(file):
-    """Lädt Excel-Dateien mit vollständiger Indexierung"""
     try:
         xls = pd.ExcelFile(file)
         df = pd.read_excel(
@@ -29,25 +28,19 @@ def load_data(file):
             skiprows=0,
             na_filter=False
         )
-        # Erstelle Volltextindex für alle Spalten
         df['volltextindex'] = df.apply(
             lambda row: ' | '.join(str(cell) for cell in row if pd.notnull(cell)),
             axis=1
         )
         st.success(f"{len(df)} Zeilen erfolgreich indexiert")
-        return pre_process(df)
+        # Spaltennamen vereinheitlichen
+        df.columns = df.columns.str.strip().str.lower()
+        return df
     except Exception as e:
         st.error(f"Fehler beim Laden: {str(e)}")
         return None
 
-def pre_process(df):
-    """Bereinigt das DataFrame"""
-    df = df.loc[:, ~df.columns.str.contains('^Unnamed')]
-    df.columns = df.columns.str.strip().str.lower()
-    return df.dropna(how='all')
-
 def full_text_search(df, query):
-    """Durchsucht alle Spalten mit Fuzzy-Matching"""
     try:
         mask = df['volltextindex'].str.lower().str.contains(query.lower())
         return df[mask]
@@ -55,21 +48,20 @@ def full_text_search(df, query):
         return pd.DataFrame()
 
 def ask_question(question, context, model):
-    """Verwendet ChatGPT zur Beantwortung der Frage mit Datenkontext"""
     try:
         client = OpenAI(api_key=api_key)
         prompt_text = f"""
 Du bist ein Datenexperte für die DNB-Datensätze.
-Basierend auf dem gegebenen Kontext beantworte die Frage.
-Kontext:
+Hier sind die Datensätze:
 {context}
-Frage: {question}
-Gib eine ausführliche Antwort in ganzen Sätzen.
+
+Beantworte folgende Frage ausschließlich auf Basis der Tabelle oben und antworte in ganzen Sätzen:
+{question}
 """
         response = client.chat.completions.create(
             model=model,
             messages=[{"role": "user", "content": prompt_text}],
-            temperature=0.7
+            temperature=0.3
         )
         return response.choices[0].message.content
     except Exception as e:
@@ -88,24 +80,34 @@ if uploaded_file:
     df = load_data(uploaded_file)
     if df is not None:
         st.write(f"Geladene Datensätze: {len(df)}")
-        search_query = st.text_input("Suchbegriff oder Frage eingeben (z.B. 'METS/MODS', 'Welche Datensets sind für Hochschulschriften geeignet?'):")
+        search_query = st.text_input(
+            "Suchbegriff oder Frage eingeben (z.B. 'Hochschulschriften' oder 'Wie viele Datensets zu Hochschulschriften gibt es?'):"
+        )
         if search_query:
-            results = full_text_search(df, search_query)
-            if not results.empty:
-                st.subheader("Suchergebnisse")
-                # Prüfe, ob die erwarteten Spalten existieren
-                display_cols = [col for col in ['datensetname', 'datenformat', 'kategorie 1', 'kategorie 2'] if col in results.columns]
-                if display_cols:
-                    st.dataframe(results[display_cols])
-                else:
-                    st.dataframe(results)
-                with st.spinner("Analysiere Treffer..."):
-                    context = results.to_string(index=False, columns=display_cols) if display_cols else results.to_string(index=False)
+            # Prüfe, ob es eine Frage ist (primitive Logik, kann erweitert werden)
+            is_question = any(search_query.strip().lower().startswith(w) for w in ["wie", "welche", "was", "zeig", "gibt", "nenn", "list", "zähl", "wieviele", "wieviel"])
+            if is_question:
+                # Kontext: ganze Tabelle als String (nur relevante Spalten)
+                context = df.to_string(index=False)
+                with st.spinner("Frage wird analysiert..."):
                     answer = ask_question(search_query, context, chatgpt_model)
-                    st.subheader("ChatGPT Antwort:")
+                    st.subheader("Antwort des Sprachmodells:")
                     st.write(answer)
             else:
-                st.warning("Keine Treffer gefunden")
+                # Stichwortsuche wie bisher
+                results = full_text_search(df, search_query)
+                if not results.empty:
+                    st.subheader("Suchergebnisse")
+                    display_cols = [col for col in ['datensetname', 'datenformat', 'kategorie 1', 'kategorie 2'] if col in results.columns]
+                    st.dataframe(results[display_cols] if display_cols else results)
+                    # Optional: Sprachmodell noch ergänzend befragen
+                    context = results.to_string(index=False, columns=display_cols) if display_cols else results.to_string(index=False)
+                    with st.spinner("Analysiere Treffer..."):
+                        answer = ask_question(search_query, context, chatgpt_model)
+                        st.subheader("ChatGPT Antwort:")
+                        st.write(answer)
+                else:
+                    st.warning("Keine Treffer gefunden")
     else:
         st.info("Bitte laden Sie eine Excel-Datei hoch")
 else:
