@@ -2,11 +2,31 @@ import streamlit as st
 import pandas as pd
 from openai import OpenAI
 
-# API-Key aus Secrets laden
-if "OPENAI_API_KEY" not in st.secrets:
-    st.error("API-Key fehlt. Bitte in den Streamlit-Secrets hinterlegen.")
+# Prüfe, ob der API-Key in den Streamlit-Secrets ist
+if "OPENAI_API_KEY" in st.secrets:
+    st.success("API-Key ist in den Streamlit-Secrets vorhanden.")
+    api_key = st.secrets["OPENAI_API_KEY"]
+else:
+    st.error("API-Key fehlt in den Streamlit-Secrets!")
     st.stop()
-api_key = st.secrets["OPENAI_API_KEY"]
+
+# Funktion zum Testen des API-Keys
+def test_openai_key(api_key):
+    try:
+        client = OpenAI(api_key=api_key)
+        client.models.list()  # Test-Request
+        return True, "API-Key funktioniert."
+    except Exception as e:
+        return False, f"API-Key funktioniert NICHT: {e}"
+
+# Teste den Key direkt nach dem Laden
+ok, msg = test_openai_key(api_key)
+if ok:
+    st.success(msg)
+else:
+    st.error(msg)
+    st.stop()
+
 
 st.sidebar.title("Konfiguration")
 chatgpt_model = st.sidebar.selectbox(
