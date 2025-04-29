@@ -8,12 +8,12 @@ if "OPENAI_API_KEY" not in st.secrets:
     st.stop()
 api_key = st.secrets["OPENAI_API_KEY"]
 
-# Modell-Auswahl in der Sidebar
+# ChatGPT Modell auswählen
 st.sidebar.title("Konfiguration")
 chatgpt_model = st.sidebar.selectbox(
     "ChatGPT Modell wählen",
     options=["gpt-3.5-turbo", "gpt-4-turbo"],
-    index=1,
+    index=1,  # Default auf gpt-4-turbo
     help="Wähle das zu verwendende ChatGPT Modell"
 )
 st.sidebar.markdown(f"Verwendetes Modell: **{chatgpt_model}**")
@@ -23,9 +23,17 @@ def load_data(file):
     """Lädt Excel-Dateien mit vollständiger Indexierung"""
     try:
         xls = pd.ExcelFile(file)
-        df = pd.read_excel(xls, sheet_name=xls.sheet_names[0], header=0, skiprows=0, na_filter=False)
+        df = pd.read_excel(
+            xls,
+            sheet_name=xls.sheet_names[0],
+            header=0,
+            skiprows=0,
+            na_filter=False
+        )
         # Erstelle Volltextindex für alle Spalten
-        df['volltextindex'] = df.apply(lambda row: ' | '.join(str(cell) for cell in row if pd.notnull(cell)), axis=1)
+        df['volltextindex'] = df.apply(
+            lambda row: ' | '.join(str(cell) for cell in row if pd.notnull(cell)), axis=1
+        )
         st.success(f"{len(df)} Zeilen erfolgreich indexiert")
         return pre_process(df)
     except Exception as e:
@@ -34,7 +42,7 @@ def load_data(file):
 
 def pre_process(df):
     """Bereinigt das DataFrame"""
-    df = df.loc[:, ~df.columns.str.contains('^Unnamed')]
+    df = df.loc[:, ~df.columns.str.contains('^unnamed')]
     df.columns = df.columns.str.strip().str.lower()
     return df.dropna(how='all')
 
@@ -44,7 +52,7 @@ def full_text_search(df, query):
         query = query.lower()
         mask = df['volltextindex'].str.lower().str.contains(query)
         return df[mask]
-    except:
+    except Exception:
         return pd.DataFrame()
 
 def ask_question(question, context, model):
@@ -82,7 +90,9 @@ if uploaded_file:
     if df is not None:
         st.write(f"Geladene Datensätze: {len(df)}")
         # Volltextsuche-Interface
-        search_query = st.text_input("Suchbegriff oder Frage eingeben (z.B. 'METS/MODS', 'Welche Datensets sind für Hochschulschriften geeignet?'):")
+        search_query = st.text_input(
+            "Suchbegriff oder Frage eingeben (z.B. 'METS/MODS', 'Welche Datensets sind für Hochschulschriften geeignet?'):"
+        )
         if search_query:
             results = full_text_search(df, search_query)
             if not results.empty:
