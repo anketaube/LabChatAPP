@@ -1,6 +1,11 @@
 import streamlit as st
 import pandas as pd
 from openai import OpenAI
+import os
+import random
+import time
+
+LOG = "questions.log"
 
 # OpenAI API-Key sicher aus den Streamlit-Secrets laden
 if "OPENAI_API_KEY" not in st.secrets:
@@ -16,9 +21,10 @@ chatgpt_model = st.sidebar.selectbox(
     index=1,  # Default auf gpt-4-turbo
     help="Wähle das zu verwendende ChatGPT Modell"
 )
+
 st.sidebar.markdown(f"Verwendetes Modell: **{chatgpt_model}**")
 
-@st.cache_data(ttl=3600)
+@st.cache_data()
 def load_data(file):
     """Lädt Excel-Dateien mit vollständiger Indexierung"""
     try:
@@ -31,8 +37,9 @@ def load_data(file):
             na_filter=False
         )
         # Erstelle Volltextindex für alle Spalten
-        df['volltextindex'] = df.apply(
-            lambda row: ' | '.join(str(cell) for cell in row if pd.notnull(cell)), axis=1
+        df['Volltextindex'] = df.apply(
+            lambda row: ' | '.join(str(cell) for cell in row if pd.notnull(cell)),
+            axis=1
         )
         st.success(f"{len(df)} Zeilen erfolgreich indexiert")
         return pre_process(df)
@@ -42,7 +49,8 @@ def load_data(file):
 
 def pre_process(df):
     """Bereinigt das DataFrame"""
-    df = df.loc[:, ~df.columns.str.contains('^unnamed')]
+    # Behalte alle originalen Spalten bei
+    df = df.loc[:, ~df.columns.str.contains('^Unnamed')]
     df.columns = df.columns.str.strip().str.lower()
     return df.dropna(how='all')
 
@@ -50,27 +58,27 @@ def full_text_search(df, query):
     """Durchsucht alle Spalten mit Fuzzy-Matching"""
     try:
         query = query.lower()
-        mask = df['volltextindex'].str.lower().str.contains(query)
+        mask = df['Volltextindex'].str.lower().str.contains(query)
         return df[mask]
-    except Exception:
+    except:
         return pd.DataFrame()
 
-def ask_question(question, context, model):
+def ask_question(question, context, model):  # api_key entfernt
     """Verwendet ChatGPT zur Beantwortung der Frage mit Datenkontext"""
     try:
-        client = OpenAI(api_key=api_key)
+        client = OpenAI(api_key=api_key)  # api_key wird global genutzt
         prompt_text = f"""
-Du bist ein Datenexperte für die DNB-Datensätze.
-Basierend auf dem gegebenen Kontext beantworte die Frage.
-Kontext:
-{context}
-Frage: {question}
-Gib eine ausführliche Antwort in ganzen Sätzen.
-"""
+            Du bist ein Datenexperte für die DNB-Datensätze.
+            Basierend auf dem gegebenen Kontext beantworte die Frage.
+            Kontext:
+            {context}
+            Frage: {question}
+            Gib eine ausführliche Antwort in ganzen Sätzen.
+            """
         response = client.chat.completions.create(
-            model=model,
+            model=model,  # Dynamisches Modell
             messages=[{"role": "user", "content": prompt_text}],
-            temperature=0.7
+            temperature=0.7  # Etwas höhere Temperatur für kreativere Antworten
         )
         return response.choices[0].message.content
     except Exception as e:
@@ -90,9 +98,7 @@ if uploaded_file:
     if df is not None:
         st.write(f"Geladene Datensätze: {len(df)}")
         # Volltextsuche-Interface
-        search_query = st.text_input(
-            "Suchbegriff oder Frage eingeben (z.B. 'METS/MODS', 'Welche Datensets sind für Hochschulschriften geeignet?'):"
-        )
+        search_query = st.text_input("Suchbegriff eingeben (z.B. 'METS/MODS' oder 'Hochschulschriften'):")
         if search_query:
             results = full_text_search(df, search_query)
             if not results.empty:
@@ -100,15 +106,15 @@ if uploaded_file:
                 st.dataframe(results[['datensetname', 'datenformat', 'kategorie 1', 'kategorie 2']])
                 # ChatGPT-Analyse der Ergebnisse
                 with st.spinner("Analysiere Treffer..."):
-                    # Kontext für das Sprachmodell aufbereiten
+                    # Formatiere die Daten für den Kontext
                     context = results.to_string(index=False, columns=['datensetname', 'datenformat', 'kategorie 1', 'kategorie 2'])
+                    # Generiere eine Frage an ChatGPT
+                    prompt = f"Basierend auf diesen Datensets: {context}\n\n{search_query}"
                     # Sende die Frage an ChatGPT und zeige die Antwort an
-                    answer = ask_question(search_query, context, chatgpt_model)
+                    answer = ask_question(prompt, context, chatgpt_model)  # api_key entfernt
                     st.subheader("ChatGPT Antwort:")
                     st.write(answer)
             else:
                 st.warning("Keine Treffer gefunden")
     else:
         st.info("Bitte laden Sie eine Excel-Datei hoch")
-else:
-    st.info("Bitte laden Sie eine Excel-Datei hoch")
