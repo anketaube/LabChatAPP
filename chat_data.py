@@ -12,6 +12,7 @@ if "OPENAI_API_KEY" not in st.secrets:
     st.stop()
 api_key = st.secrets["OPENAI_API_KEY"]
 
+# Konfiguration in der Sidebar
 st.sidebar.title("Konfiguration")
 chatgpt_model = st.sidebar.selectbox(
     "ChatGPT Modell wählen",
@@ -21,6 +22,23 @@ chatgpt_model = st.sidebar.selectbox(
 )
 st.sidebar.markdown(f"Verwendetes Modell: **{chatgpt_model}**")
 
+# Datenquellen-Optionen in der Sidebar
+data_source = st.sidebar.radio(
+    "Datenquelle wählen:",
+    options=["Excel-Datei", "Website (DNB Lab)"],
+    index=0  # Standardmäßig Excel
+)
+
+# Excel-Upload
+if data_source == "Excel-Datei":
+    uploaded_file = st.sidebar.file_uploader("Excel-Datei hochladen", type=["xlsx"])
+    website_url = None  # Deaktiviere Website-Option
+# Website-URL
+else:
+    uploaded_file = None  # Deaktiviere Excel-Option
+    website_url = st.sidebar.text_input("Website-URL (DNB Lab, z.B. https://www.dnb.de/dnblab)")
+
+# Web-Crawling-Funktion
 def crawl_website(base_url):
     """Crawlt alle Unterseiten einer Website und extrahiert Textinhalte"""
     with st.spinner(f"Crawle Website {base_url}..."):
@@ -38,8 +56,8 @@ def crawl_website(base_url):
                 if response.status_code != 200:
                     continue
                 selector = Selector(response.text)
-                # Hauptinhalt extrahieren (main, role=main, body, p)
-                content = ' '.join(selector.xpath('//main//text() | //div[@role="main"]//text() | //body//text() | //p//text()').getall())
+                # Hauptinhalt extrahieren (main, role=main, body, article, section, p)
+                content = ' '.join(selector.xpath('//main//text() | //div[@role="main"]//text() | //body//text() | //article//text() | //section//text() | //p//text()').getall())
                 content = re.sub(r'\s+', ' ', content).strip()
                 if content and len(content) > 30:
                     data.append({
@@ -63,6 +81,7 @@ def crawl_website(base_url):
             st.warning("Keine Inhalte auf der Website gefunden.")
             return None
 
+# Excel-Ladefunktion
 @st.cache_data()
 def load_excel(file):
     try:
@@ -77,6 +96,7 @@ def load_excel(file):
         st.error(f"Fehler beim Laden der Excel-Datei: {e}")
         return None
 
+# Suchfunktion
 def full_text_search(df, query):
     try:
         mask = df['volltextindex'].str.lower().str.contains(query.lower())
@@ -84,6 +104,7 @@ def full_text_search(df, query):
     except Exception:
         return pd.DataFrame()
 
+# OpenAI-Funktion
 def ask_question(question, context, model):
     try:
         client = OpenAI(api_key=api_key)
@@ -106,36 +127,25 @@ Frage: {question}
         st.error(f"Fehler bei OpenAI API-Abfrage: {e}")
         return "Fehler bei der Anfrage."
 
-st.title("DNB-Datenset-Suche")
+# Hauptbereich der App
+st.title("DNBLab-Chatbot")
 
-uploaded_file = st.sidebar.file_uploader("Excel-Datei hochladen", type=["xlsx"])
-
-st.markdown("**Oder indexiere eine Website (inkl. Unterseiten, z.B. https://dnb.de/dnblab/*):**")
-with st.form(key="web_form"):
-    website_url = st.text_input("Website-URL (mit /* für alle Unterseiten)", value="")
-    crawl_btn = st.form_submit_button("Übernehmen")
-
+# Daten laden (entweder Excel oder Website)
 df = None
-
-if uploaded_file and not (website_url and crawl_btn):
+if uploaded_file:
     df = load_excel(uploaded_file)
-elif (website_url and crawl_btn) and not uploaded_file:
-    # /* am Ende entfernen, falls vorhanden
-    base_url = website_url.rstrip("/*")
-    if base_url.startswith("http"):
-        df = crawl_website(base_url)
-    else:
-        st.warning("Bitte eine gültige URL eingeben (mit http(s)://).")
-elif uploaded_file and (website_url and crawl_btn):
-    st.warning("Bitte entweder eine Excel-Datei ODER eine Website-URL angeben, nicht beides gleichzeitig.")
+elif website_url:
+    df = crawl_website(website_url)
 
+# Suchfeld und Ergebnisse
 if df is not None and not df.empty:
     st.write(f"Geladene Datensätze: {len(df)} (Quelle: {df['quelle'].iloc[0] if df['quelle'].nunique()==1 else 'gemischt'})")
     search_query = st.text_input("Suchbegriff oder Frage eingeben:")
+
     if search_query:
-        # Einfache Heuristik, um zu erkennen, ob es eine Frage ist
         question_words = ["wie", "was", "welche", "wann", "warum", "wo", "wieviel", "wieviele", "zähl", "nenn", "gibt", "zeige"]
         is_question = any(search_query.lower().startswith(word) for word in question_words)
+
         if is_question:
             context = df[['volltextindex', 'quelle']].to_string(index=False)
             with st.spinner("Frage wird analysiert..."):
@@ -156,4 +166,4 @@ if df is not None and not df.empty:
             else:
                 st.warning("Keine Treffer gefunden.")
 else:
-    st.info("Bitte laden Sie eine Excel-Datei hoch ODER geben Sie eine Website-URL ein und klicken Sie auf 'Übernehmen'.")
+    st.info("Bitte wählen Sie eine Datenquelle in der Sidebar und laden Sie die entsprechenden Daten.")
