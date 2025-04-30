@@ -12,11 +12,8 @@ if "OPENAI_API_KEY" not in st.secrets:
     st.stop()
 api_key = st.secrets["OPENAI_API_KEY"]
 
-st.set_page_config(layout="wide")
-
-# Sidebar Konfiguration
-st.sidebar.title("Datenquelle wählen")
-data_source = st.sidebar.radio("Quelle:", ["Excel-Datei", "DNBLab Webseite"])
+st.sidebar.title("Konfiguration")
+data_source = st.sidebar.radio("Datenquelle wählen:", ["Excel-Datei", "DNBLab-Webseite"])
 
 chatgpt_model = st.sidebar.selectbox(
     "ChatGPT Modell wählen",
@@ -26,7 +23,6 @@ chatgpt_model = st.sidebar.selectbox(
 )
 st.sidebar.markdown(f"Verwendetes Modell: **{chatgpt_model}**")
 
-# Funktion: Excel laden
 @st.cache_data
 def load_excel(file):
     try:
@@ -40,8 +36,7 @@ def load_excel(file):
         st.error(f"Fehler beim Laden der Excel-Datei: {e}")
         return None
 
-# Funktion: DNBLab Webseite inkl. Unterseiten crawlen
-@st.cache_data(show_spinner=False)
+@st.cache_data(show_spinner=True)
 def crawl_dnblab(base_url="https://www.dnb.de/DE/Professionell/Services/WissenschaftundForschung/DNBLab"):
     client = httpx.Client(timeout=10, follow_redirects=True)
     visited = set()
@@ -58,7 +53,7 @@ def crawl_dnblab(base_url="https://www.dnb.de/DE/Professionell/Services/Wissensc
             if resp.status_code != 200:
                 continue
             selector = Selector(resp.text)
-            # Text aus relevanten Tags extrahieren
+            # Extrahiere Hauptinhalt
             content = ' '.join(selector.xpath(
                 '//main//text() | //div[@role="main"]//text() | //body//text() | //article//text() | //section//text() | //p//text() | //li//text()'
             ).getall())
@@ -69,10 +64,14 @@ def crawl_dnblab(base_url="https://www.dnb.de/DE/Professionell/Services/Wissensc
                     'volltextindex': content,
                     'quelle': url
                 })
-            # Links sammeln, die mit base_url beginnen (Unterseiten)
+            # Finde alle internen Links, die mit base_url beginnen
             for link in selector.xpath('//a/@href').getall():
                 full_url = urljoin(url, link).split('#')[0]
-                if full_url.startswith(base_url) and full_url not in visited:
+                if (
+                    full_url.startswith(base_url)
+                    and full_url not in visited
+                    and full_url not in to_visit
+                ):
                     to_visit.add(full_url)
         except Exception as e:
             st.warning(f"Fehler beim Crawlen von {url}: {e}")
@@ -84,7 +83,6 @@ def crawl_dnblab(base_url="https://www.dnb.de/DE/Professionell/Services/Wissensc
     else:
         return None
 
-# Suche im DataFrame
 def full_text_search(df, query):
     try:
         mask = df['volltextindex'].str.lower().str.contains(query.lower())
@@ -92,7 +90,6 @@ def full_text_search(df, query):
     except Exception:
         return pd.DataFrame()
 
-# OpenAI Abfrage
 def ask_question(question, context, model):
     try:
         client = OpenAI(api_key=api_key)
@@ -115,9 +112,6 @@ Frage: {question}
         st.error(f"Fehler bei OpenAI API-Abfrage: {e}")
         return "Fehler bei der Anfrage."
 
-# --- UI ---
-
-# Layout mit 3 Spalten: links Sidebar (automatisch), mittig Hauptbereich, rechts leer
 st.title("DNBLab-Chatbot")
 
 df = None
@@ -127,22 +121,19 @@ if data_source == "Excel-Datei":
     if uploaded_file:
         with st.spinner("Excel-Datei wird geladen..."):
             df = load_excel(uploaded_file)
-elif data_source == "DNBLab Webseite":
-    st.sidebar.info("Es wird die DNB Lab Webseite und alle Unterseiten indexiert.\nDas kann einige Sekunden dauern.")
+elif data_source == "DNBLab-Webseite":
+    st.sidebar.info("Es wird die DNBLab-Webseite inkl. aller Unterseiten indexiert. Das kann einige Sekunden dauern.")
     with st.spinner("DNBLab-Webseite wird indexiert..."):
         df = crawl_dnblab()
 
-if df is None:
+if df is None or df.empty:
     st.info("Bitte laden Sie eine Excel-Datei hoch oder wählen Sie die DNBLab-Webseite aus der Sidebar.")
 else:
-    st.write(f"Geladene Datensätze: {len(df)} (Quelle: {df['quelle'].iloc[0] if df['quelle'].nunique()==1 else 'gemischt'})")
-
+    st.write(f"Geladene Datensätze: {len(df)}")
     query = st.text_input("Suchbegriff oder Frage eingeben:")
-
     if query:
         question_words = ["wie", "was", "welche", "wann", "warum", "wo", "wieviel", "wieviele", "zähl", "nenn", "gibt", "zeige"]
         is_question = any(query.lower().startswith(word) for word in question_words)
-
         if is_question:
             context = df[['volltextindex', 'quelle']].to_string(index=False)
             with st.spinner("Frage wird analysiert..."):
