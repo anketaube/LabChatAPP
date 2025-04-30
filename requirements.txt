@@ -7,3 +7,5 @@ sentence-transformers
 openai
 openpyxl
 parsel
+httpx
+tqdm
