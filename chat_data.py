@@ -1,16 +1,20 @@
 import streamlit as st
 import pandas as pd
-from openai import OpenAI
 import httpx
 from parsel import Selector
 import re
 from urllib.parse import urljoin
 
-# API-Key aus Streamlit-Secrets laden
-if "OPENAI_API_KEY" not in st.secrets:
-    st.error("API-Key fehlt. Bitte in den Streamlit-Secrets hinterlegen.")
-    st.stop()
-api_key = st.secrets["OPENAI_API_KEY"]
+# Basis-URL und Wunsch-URLs
+BASE_URL = "https://www.dnb.de/DE/Professionell/Services/WissenschaftundForschung/DNBLab"
+START_URL = BASE_URL + "/dnblab_node.html"
+EXTRA_URLS = [
+    "https://www.dnb.de/DE/Professionell/Services/WissenschaftundForschung/DNBLab/dnblabTutorials.html?nn=849628",
+    "https://www.dnb.de/DE/Professionell/Services/WissenschaftundForschung/DNBLabPraxis/dnblabPraxis_node.html",
+    "https://www.dnb.de/DE/Professionell/Services/WissenschaftundForschung/DNBLab/dnblabSchnittstellen.html?nn=849628",
+    "https://www.dnb.de/DE/Professionell/Services/WissenschaftundForschung/DNBLab/dnblabFreieDigitaleObjektsammlung.html?nn=849628"
+    # Weitere Wunsch-URLs einfach ergänzen!
+]
 
 st.sidebar.title("Konfiguration")
 data_source = st.sidebar.radio("Datenquelle wählen:", ["Excel-Datei", "DNBLab-Webseite"])
@@ -18,29 +22,20 @@ data_source = st.sidebar.radio("Datenquelle wählen:", ["Excel-Datei", "DNBLab-W
 chatgpt_model = st.sidebar.selectbox(
     "ChatGPT Modell wählen",
     options=["gpt-3.5-turbo", "gpt-4-turbo"],
-    index=1,
-    help="Wähle das zu verwendende ChatGPT Modell"
+    index=1
 )
 st.sidebar.markdown(f"Verwendetes Modell: **{chatgpt_model}**")
 
-@st.cache_data
-def load_excel(file):
-    try:
-        xls = pd.ExcelFile(file)
-        df = pd.read_excel(xls, sheet_name=xls.sheet_names[0], header=0, na_filter=False)
-        df['volltextindex'] = df.apply(lambda row: ' | '.join(str(cell) for cell in row if pd.notnull(cell)), axis=1)
-        df['quelle'] = "Excel-Datei"
-        df.columns = df.columns.str.strip().str.lower()
-        return df
-    except Exception as e:
-        st.error(f"Fehler beim Laden der Excel-Datei: {e}")
-        return None
+if "OPENAI_API_KEY" not in st.secrets:
+    st.error("API-Key fehlt. Bitte in den Streamlit-Secrets hinterlegen.")
+    st.stop()
+api_key = st.secrets["OPENAI_API_KEY"]
 
 @st.cache_data(show_spinner=True)
-def crawl_dnblab(base_url="https://www.dnb.de/DE/Professionell/Services/WissenschaftundForschung/DNBLab"):
+def crawl_dnblab():
     client = httpx.Client(timeout=10, follow_redirects=True)
     visited = set()
-    to_visit = set([base_url])
+    to_visit = set([START_URL] + EXTRA_URLS)
     data = []
 
     while to_visit:
@@ -53,7 +48,7 @@ def crawl_dnblab(base_url="https://www.dnb.de/DE/Professionell/Services/Wissensc
             if resp.status_code != 200:
                 continue
             selector = Selector(resp.text)
-            # Extrahiere Hauptinhalt
+            # Hauptinhalt extrahieren
             content = ' '.join(selector.xpath(
                 '//main//text() | //div[@role="main"]//text() | //body//text() | //article//text() | //section//text() | //p//text() | //li//text()'
             ).getall())
@@ -64,11 +59,11 @@ def crawl_dnblab(base_url="https://www.dnb.de/DE/Professionell/Services/Wissensc
                     'volltextindex': content,
                     'quelle': url
                 })
-            # Finde alle internen Links, die mit base_url beginnen
+            # Interne Links sammeln
             for link in selector.xpath('//a/@href').getall():
                 full_url = urljoin(url, link).split('#')[0]
                 if (
-                    full_url.startswith(base_url)
+                    full_url.startswith(BASE_URL)
                     and full_url not in visited
                     and full_url not in to_visit
                 ):
@@ -83,6 +78,19 @@ def crawl_dnblab(base_url="https://www.dnb.de/DE/Professionell/Services/Wissensc
     else:
         return None
 
+@st.cache_data
+def load_excel(file):
+    try:
+        xls = pd.ExcelFile(file)
+        df = pd.read_excel(xls, sheet_name=xls.sheet_names[0], header=0, na_filter=False)
+        df['volltextindex'] = df.apply(lambda row: ' | '.join(str(cell) for cell in row if pd.notnull(cell)), axis=1)
+        df['quelle'] = "Excel-Datei"
+        df.columns = df.columns.str.strip().str.lower()
+        return df
+    except Exception as e:
+        st.error(f"Fehler beim Laden der Excel-Datei: {e}")
+        return None
+
 def full_text_search(df, query):
     try:
         mask = df['volltextindex'].str.lower().str.contains(query.lower())
@@ -92,6 +100,7 @@ def full_text_search(df, query):
 
 def ask_question(question, context, model):
     try:
+        from openai import OpenAI
         client = OpenAI(api_key=api_key)
         prompt = f"""
 Du bist ein Datenexperte für die DNB-Datensätze.
@@ -130,6 +139,9 @@ if df is None or df.empty:
     st.info("Bitte laden Sie eine Excel-Datei hoch oder wählen Sie die DNBLab-Webseite aus der Sidebar.")
 else:
     st.write(f"Geladene Datensätze: {len(df)}")
+    st.markdown("**Folgende Seiten wurden indexiert:**")
+    for url in sorted(df['quelle'].unique()):
+        st.markdown(f"- [{url}]({url})")
     query = st.text_input("Suchbegriff oder Frage eingeben:")
     if query:
         question_words = ["wie", "was", "welche", "wann", "warum", "wo", "wieviel", "wieviele", "zähl", "nenn", "gibt", "zeige"]
