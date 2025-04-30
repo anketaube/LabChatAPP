@@ -1,11 +1,11 @@
 import streamlit as st
 import pandas as pd
 from openai import OpenAI
+
 import httpx
 from parsel import Selector
 import re
-from urllib.parse import urljoin, urlparse
-from tqdm import tqdm
+from urllib.parse import urljoin
 
 # API-Key aus Streamlit-Secrets laden
 if "OPENAI_API_KEY" not in st.secrets:
@@ -25,69 +25,58 @@ st.sidebar.markdown(f"Verwendetes Modell: **{chatgpt_model}**")
 def crawl_website(base_url):
     """Crawlt alle Unterseiten einer Website und extrahiert Textinhalte"""
     with st.spinner(f"Crawle Website {base_url}..."):
-        try:
-            client = httpx.Client(timeout=10)
-            visited = set()
-            to_visit = set([base_url])
-            data = []
-
-            while to_visit:
-                url = to_visit.pop()
-                if url in visited:
+        client = httpx.Client(timeout=10)
+        visited = set()
+        to_visit = set([base_url])
+        data = []
+        while to_visit:
+            url = to_visit.pop()
+            if url in visited:
+                continue
+            visited.add(url)
+            try:
+                response = client.get(url)
+                if response.status_code != 200:
                     continue
-                visited.add(url)
-                try:
-                    response = client.get(url)
-                    if not response.status_code == 200:
-                        continue
-                    selector = Selector(response.text)
-                    # Hauptinhalt extrahieren
-                    content = ' '.join(selector.xpath('//main//text() | //div[@role="main"]//text()').getall())
-                    content = re.sub(r'\s+', ' ', content).strip()
-                    if content:
-                        data.append({
-                            'datensetname': f"Web-Inhalt: {url}",
-                            'volltextindex': content,
-                            'quelle': url
-                        })
-                    # Alle Links auf der Seite finden
-                    for link in selector.xpath('//a/@href').getall():
-                        full_url = urljoin(url, link).split('#')[0]
-                        # Nur interne Links mitnehmen
-                        if full_url.startswith(base_url) and full_url not in visited:
-                            to_visit.add(full_url)
-                except Exception as e:
-                    st.warning(f"Fehler beim Crawlen von {url}: {e}")
-            return pd.DataFrame(data)
-        except Exception as e:
-            st.error(f"Fehler beim Crawlen: {e}")
-            return pd.DataFrame()
+                selector = Selector(response.text)
+                # Hauptinhalt extrahieren
+                content = ' '.join(selector.xpath('//main//text() | //div[@role="main"]//text()').getall())
+                content = re.sub(r'\s+', ' ', content).strip()
+                if content:
+                    data.append({
+                        'datensetname': f"Web-Inhalt: {url}",
+                        'volltextindex': content,
+                        'quelle': url
+                    })
+                # Alle Links auf der Seite finden
+                for link in selector.xpath('//a/@href').getall():
+                    full_url = urljoin(url, link).split('#')[0]
+                    if full_url.startswith(base_url) and full_url not in visited:
+                        to_visit.add(full_url)
+            except Exception as e:
+                st.warning(f"Fehler beim Crawlen von {url}: {e}")
+        if data:
+            df = pd.DataFrame(data)
+            df.columns = df.columns.str.strip().str.lower()
+            st.success(f"{len(df)} Webseiten erfolgreich indexiert.")
+            return df
+        else:
+            st.warning("Keine Inhalte auf der Website gefunden.")
+            return None
 
 @st.cache_data()
-def load_data(file, website_url=None):
+def load_excel(file):
     try:
-        dfs = []
-        # Excel-Daten laden
-        if file:
-            xls = pd.ExcelFile(file)
-            df = pd.read_excel(xls, sheet_name=xls.sheet_names[0], header=0, na_filter=False)
-            df['volltextindex'] = df.apply(lambda row: ' | '.join(str(cell) for cell in row if pd.notnull(cell)), axis=1)
-            df['quelle'] = "Excel-Datei"
-            df.columns = df.columns.str.strip().str.lower()
-            dfs.append(df)
-        # Web-Daten crawlen
-        if website_url and website_url.startswith("http"):
-            web_df = crawl_website(website_url.rstrip("*"))
-            if not web_df.empty:
-                dfs.append(web_df)
-        if not dfs:
-            return pd.DataFrame()
-        combined_df = pd.concat(dfs, ignore_index=True)
-        combined_df.columns = combined_df.columns.str.strip().str.lower()
-        return combined_df
+        xls = pd.ExcelFile(file)
+        df = pd.read_excel(xls, sheet_name=xls.sheet_names[0], header=0, na_filter=False)
+        df['volltextindex'] = df.apply(lambda row: ' | '.join(str(cell) for cell in row if pd.notnull(cell)), axis=1)
+        df['quelle'] = "Excel-Datei"
+        df.columns = df.columns.str.strip().str.lower()
+        st.success(f"{len(df)} Zeilen erfolgreich geladen und indexiert.")
+        return df
     except Exception as e:
-        st.error(f"Fehler beim Laden der Daten: {e}")
-        return pd.DataFrame()
+        st.error(f"Fehler beim Laden der Excel-Datei: {e}")
+        return None
 
 def full_text_search(df, query):
     try:
@@ -123,30 +112,39 @@ st.title("DNB-Datenset-Suche")
 uploaded_file = st.sidebar.file_uploader("Excel-Datei hochladen", type=["xlsx"])
 website_url = st.sidebar.text_input("Website-URL inkl. * für alle Unterseiten (z.B. https://dnb.de/dnblab*)")
 
-df = load_data(uploaded_file, website_url)
+df = None
+
+if uploaded_file and not website_url:
+    df = load_excel(uploaded_file)
+elif website_url and not uploaded_file:
+    # Sternchen am Ende entfernen, falls vorhanden
+    base_url = website_url.rstrip("*")
+    if base_url.startswith("http"):
+        df = crawl_website(base_url)
+    else:
+        st.warning("Bitte eine gültige URL eingeben (mit http(s)://).")
+elif uploaded_file and website_url:
+    st.warning("Bitte entweder eine Excel-Datei ODER eine Website-URL angeben, nicht beides gleichzeitig.")
 
 if df is not None and not df.empty:
-    st.write(f"Gesamte Datensätze: {len(df)} (Excel: {sum(df['quelle'] == 'Excel-Datei')} | Web: {sum(df['quelle'] != 'Excel-Datei')})")
+    st.write(f"Geladene Datensätze: {len(df)} (Quelle: {df['quelle'].iloc[0] if df['quelle'].nunique()==1 else 'gemischt'})")
     search_query = st.text_input("Suchbegriff oder Frage eingeben:")
     if search_query:
         # Einfache Heuristik, um zu erkennen, ob es eine Frage ist
         question_words = ["wie", "was", "welche", "wann", "warum", "wo", "wieviel", "wieviele", "zähl", "nenn", "gibt", "zeige"]
         is_question = any(search_query.lower().startswith(word) for word in question_words)
         if is_question:
-            # Ganze Tabelle als Kontext an das Sprachmodell geben (mit Quellen)
             context = df[['volltextindex', 'quelle']].to_string(index=False)
             with st.spinner("Frage wird analysiert..."):
                 answer = ask_question(search_query, context, chatgpt_model)
             st.subheader("Antwort des Sprachmodells:")
             st.write(answer)
         else:
-            # Stichwortsuche
             results = full_text_search(df, search_query)
             if not results.empty:
                 st.subheader("Suchergebnisse")
                 display_cols = ['quelle'] + [col for col in ['datensetname', 'datenformat', 'kategorie 1', 'kategorie 2'] if col in results.columns]
-                st.dataframe(results[display_cols])
-                # Optional: Sprachmodell mit Treffern befragen
+                st.dataframe(results[display_cols] if display_cols else results)
                 context = results[['volltextindex', 'quelle']].to_string(index=False)
                 with st.spinner("Analysiere Treffer..."):
                     answer = ask_question(search_query, context, chatgpt_model)
@@ -155,4 +153,4 @@ if df is not None and not df.empty:
             else:
                 st.warning("Keine Treffer gefunden.")
 else:
-    st.info("Bitte laden Sie eine Excel-Datei hoch oder geben Sie eine Website-URL ein.")
+    st.info("Bitte laden Sie eine Excel-Datei hoch ODER geben Sie eine Website-URL ein.")
