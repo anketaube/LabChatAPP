@@ -1,7 +1,6 @@
 import streamlit as st
 import pandas as pd
 from openai import OpenAI
-
 import httpx
 from parsel import Selector
 import re
@@ -39,16 +38,16 @@ def crawl_website(base_url):
                 if response.status_code != 200:
                     continue
                 selector = Selector(response.text)
-                # Hauptinhalt extrahieren
-                content = ' '.join(selector.xpath('//main//text() | //div[@role="main"]//text()').getall())
+                # Hauptinhalt extrahieren (main, role=main, body, p)
+                content = ' '.join(selector.xpath('//main//text() | //div[@role="main"]//text() | //body//text() | //p//text()').getall())
                 content = re.sub(r'\s+', ' ', content).strip()
-                if content:
+                if content and len(content) > 30:
                     data.append({
                         'datensetname': f"Web-Inhalt: {url}",
                         'volltextindex': content,
                         'quelle': url
                     })
-                # Alle Links auf der Seite finden
+                # Alle internen Links auf der Seite finden
                 for link in selector.xpath('//a/@href').getall():
                     full_url = urljoin(url, link).split('#')[0]
                     if full_url.startswith(base_url) and full_url not in visited:
@@ -110,20 +109,24 @@ Frage: {question}
 st.title("DNB-Datenset-Suche")
 
 uploaded_file = st.sidebar.file_uploader("Excel-Datei hochladen", type=["xlsx"])
-website_url = st.sidebar.text_input("Website-URL inkl. * für alle Unterseiten (z.B. https://dnb.de/dnblab*)")
+
+st.markdown("**Oder indexiere eine Website (inkl. Unterseiten, z.B. https://dnb.de/dnblab/*):**")
+with st.form(key="web_form"):
+    website_url = st.text_input("Website-URL (mit /* für alle Unterseiten)", value="")
+    crawl_btn = st.form_submit_button("Übernehmen")
 
 df = None
 
-if uploaded_file and not website_url:
+if uploaded_file and not (website_url and crawl_btn):
     df = load_excel(uploaded_file)
-elif website_url and not uploaded_file:
-    # Sternchen am Ende entfernen, falls vorhanden
-    base_url = website_url.rstrip("*")
+elif (website_url and crawl_btn) and not uploaded_file:
+    # /* am Ende entfernen, falls vorhanden
+    base_url = website_url.rstrip("/*")
     if base_url.startswith("http"):
         df = crawl_website(base_url)
     else:
         st.warning("Bitte eine gültige URL eingeben (mit http(s)://).")
-elif uploaded_file and website_url:
+elif uploaded_file and (website_url and crawl_btn):
     st.warning("Bitte entweder eine Excel-Datei ODER eine Website-URL angeben, nicht beides gleichzeitig.")
 
 if df is not None and not df.empty:
@@ -153,4 +156,4 @@ if df is not None and not df.empty:
             else:
                 st.warning("Keine Treffer gefunden.")
 else:
-    st.info("Bitte laden Sie eine Excel-Datei hoch ODER geben Sie eine Website-URL ein.")
+    st.info("Bitte laden Sie eine Excel-Datei hoch ODER geben Sie eine Website-URL ein und klicken Sie auf 'Übernehmen'.")
