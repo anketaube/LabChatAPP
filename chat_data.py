@@ -132,48 +132,58 @@ Frage: {question}
 
 st.title("DNBLab-Chatbot")
 
-# Session State für Index und Chat
+# Indexe initialisieren
 if "web_df" not in st.session_state:
     with st.spinner("Indexiere DNBLab-Webseiten ..."):
         st.session_state.web_df = crawl_dnblab()
-if "file_df" not in st.session_state:
-    st.session_state.file_df = pd.DataFrame(columns=["volltextindex", "quelle"])
-if "combined_df" not in st.session_state:
-    st.session_state.combined_df = st.session_state.web_df.copy()
+if "file_dfs" not in st.session_state:
+    st.session_state.file_dfs = dict()
 if "chat_history" not in st.session_state:
     st.session_state.chat_history = []
 
-# Nach Datei-Upload: Index erweitern
+# Nach Datei-Upload: Einzelne Indizes für jede Datei
 if index_button and uploaded_files:
-    file_data = []
     for file in uploaded_files:
         text = process_file(file)
         if text.strip():
-            file_data.append({
-                "volltextindex": text,
-                "quelle": file.name
-            })
-    if file_data:
-        new_file_df = pd.DataFrame(file_data)
-        st.session_state.file_df = pd.concat([st.session_state.file_df, new_file_df], ignore_index=True)
-        st.session_state.combined_df = pd.concat([st.session_state.web_df, st.session_state.file_df], ignore_index=True)
-        st.success(f"{len(file_data)} Datei(en) zum Index hinzugefügt.")
-    else:
-        st.warning("Keine verwertbaren Inhalte in den hochgeladenen Dateien gefunden.")
+            df_file = pd.DataFrame([{"volltextindex": text, "quelle": file.name}])
+            st.session_state.file_dfs[file.name] = df_file
+    st.success(f"{len(uploaded_files)} Datei(en) zum Index hinzugefügt.")
 
-# Index-Info
-st.write(f"**Aktueller Index umfasst {len(st.session_state.combined_df)} Einträge.**")
+# Checkbox-Auswahl für Web und jede Datei
+st.sidebar.markdown("**Quellen für die nächste Frage auswählen:**")
+web_selected = st.sidebar.checkbox("Webseiten-Index", value=True)
+file_selected = {}
+for fname in st.session_state.file_dfs:
+    file_selected[fname] = st.sidebar.checkbox(fname, value=True)
+
+# Indexe kombinieren nach Auswahl
+dfs = []
+if web_selected:
+    dfs.append(st.session_state.web_df)
+for fname, selected in file_selected.items():
+    if selected:
+        dfs.append(st.session_state.file_dfs[fname])
+if dfs:
+    combined_df = pd.concat(dfs, ignore_index=True)
+else:
+    combined_df = pd.DataFrame(columns=["volltextindex", "quelle"])
+
+st.write(f"**Aktueller Index umfasst {len(combined_df)} Einträge.**")
 st.markdown("**Quellen im Index:**")
-for url in sorted(st.session_state.combined_df['quelle'].unique()):
-    st.markdown(f"- {url}")
+if web_selected:
+    st.markdown("- Webseiten-Index")
+for fname, selected in file_selected.items():
+    if selected:
+        st.markdown(f"- {fname}")
 
-# Chat-UI: Verlauf & Prompt-Chaining
+# Chat-Historie
 for i, entry in enumerate(st.session_state.chat_history):
     st.markdown(f"**Frage {i+1}:** {entry['question']}")
     st.markdown(f"**Antwort {i+1}:** {entry['answer']}")
     st.markdown("**Verwendete Quellen:**")
     for q in entry['sources']:
-        if q.startswith("http"):
+        if isinstance(q, str) and q.startswith("http"):
             st.markdown(f"- [{q}]({q})")
         else:
             st.markdown(f"- {q}")
@@ -189,8 +199,7 @@ absenden = st.button("Absenden")
 
 if absenden and prompt:
     # Kontext: Relevante Einträge suchen (max. 5 Treffer à 1000 Zeichen)
-    df = st.session_state.combined_df
-    results = full_text_search(df, prompt)
+    results = full_text_search(combined_df, prompt)
     if not results.empty:
         context = "\n\n".join(
             f"Quelle: {row['quelle']}\nInhalt: {row['volltextindex'][:1000]}..."
