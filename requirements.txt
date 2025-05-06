@@ -9,3 +9,7 @@ openpyxl
 parsel
 httpx
 tqdm
+PyPDF2
+python-docx
+lxml
+docx2txt
