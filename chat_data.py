@@ -159,11 +159,14 @@ for fname in st.session_state.file_dfs:
 
 # Indexe kombinieren nach Auswahl
 dfs = []
+herangezogene_quellen = []
 if web_selected:
     dfs.append(st.session_state.web_df)
+    herangezogene_quellen.append("Webseiten-Index")
 for fname, selected in file_selected.items():
     if selected:
         dfs.append(st.session_state.file_dfs[fname])
+        herangezogene_quellen.append(fname)
 if dfs:
     combined_df = pd.concat(dfs, ignore_index=True)
 else:
@@ -171,22 +174,22 @@ else:
 
 st.write(f"**Aktueller Index umfasst {len(combined_df)} Einträge.**")
 st.markdown("**Quellen im Index:**")
-if web_selected:
-    st.markdown("- Webseiten-Index")
-for fname, selected in file_selected.items():
-    if selected:
-        st.markdown(f"- {fname}")
+for q in herangezogene_quellen:
+    st.markdown(f"- {q}")
 
 # Chat-Historie
 for i, entry in enumerate(st.session_state.chat_history):
     st.markdown(f"**Frage {i+1}:** {entry['question']}")
     st.markdown(f"**Antwort {i+1}:** {entry['answer']}")
-    st.markdown("**Verwendete Quellen:**")
+    st.markdown("**Verwendete Quellen (Treffer):**")
     for q in entry['sources']:
         if isinstance(q, str) and q.startswith("http"):
             st.markdown(f"- [{q}]({q})")
         else:
             st.markdown(f"- {q}")
+    st.markdown("**Herangezogene Quellen (Checkbox-Auswahl):**")
+    for q in entry['used_indices']:
+        st.markdown(f"- {q}")
     st.markdown("---")
 
 # Eingabefeld für neue Frage oder Nachfrage
@@ -211,5 +214,10 @@ if absenden and prompt:
         quellen = []
     with st.spinner("Antwort wird generiert ..."):
         answer = ask_question(prompt, context, chatgpt_model, api_key)
-    st.session_state.chat_history.append({"question": prompt, "answer": answer, "sources": quellen})
+    st.session_state.chat_history.append({
+        "question": prompt,
+        "answer": answer,
+        "sources": quellen,
+        "used_indices": herangezogene_quellen.copy()
+    })
     st.rerun()
