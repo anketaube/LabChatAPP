@@ -18,7 +18,7 @@ EXTRA_URLS = [
     "https://www.dnb.de/DE/Professionell/Services/WissenschaftundForschung/DNBLab/dnblabFreieDigitaleObjektsammlung.html?nn=849628"
 ]
 
-# ------------------ Datei-Verarbeitung ------------------
+# Datei-Verarbeitung
 def process_file(file):
     if file.type == "application/pdf":
         reader = PdfReader(file)
@@ -39,7 +39,7 @@ def process_file(file):
         text = ""
     return text
 
-# ------------------ Webseiten-Crawler ------------------
+# Webseiten-Crawler
 @st.cache_data(show_spinner=True)
 def crawl_dnblab():
     client = httpx.Client(timeout=10, follow_redirects=True)
@@ -66,7 +66,6 @@ def crawl_dnblab():
                     'volltextindex': content,
                     'quelle': url
                 })
-            # Interne Links sammeln
             for link in selector.xpath('//a/@href').getall():
                 full_url = urljoin(url, link).split('#')[0]
                 if (
@@ -84,7 +83,7 @@ def crawl_dnblab():
     else:
         return pd.DataFrame(columns=["datensetname", "volltextindex", "quelle"])
 
-# ------------------ OpenAI Abfrage ------------------
+# OpenAI Abfrage
 def ask_question(question, context, model, api_key):
     try:
         from openai import OpenAI
@@ -94,7 +93,7 @@ Du bist ein Datenexperte für die DNB-Datensätze.
 Hier sind die Daten mit Quellenangaben:
 {context}
 Beantworte die folgende Frage basierend auf den Daten oben in ganzen Sätzen.
-Gib immer die Quelle der Information an (entweder Excel-Datei, Web-URL oder Dateiname).
+Gib immer die Quelle(n) der Information an (Web-URL oder Dateiname, ggf. mehrere).
 Frage: {question}
 """
         response = client.chat.completions.create(
@@ -107,7 +106,7 @@ Frage: {question}
         st.error(f"Fehler bei OpenAI API-Abfrage: {e}")
         return "Fehler bei der Anfrage."
 
-# ------------------ Streamlit UI ------------------
+# Streamlit UI
 st.title("DNBLab-Chatbot")
 
 if "OPENAI_API_KEY" not in st.secrets:
@@ -129,7 +128,7 @@ uploaded_files = st.sidebar.file_uploader(
     type=["xlsx", "xml", "pdf", "docx", "doc"],
     accept_multiple_files=True
 )
-upload_button = st.sidebar.button("Hochladen")
+index_button = st.sidebar.button("Indexieren")
 
 # Session State für Index und Chat
 if "web_df" not in st.session_state:
@@ -143,7 +142,7 @@ if "chat_history" not in st.session_state:
     st.session_state.chat_history = []
 
 # Nach Datei-Upload: Index erweitern
-if upload_button and uploaded_files:
+if index_button and uploaded_files:
     file_data = []
     for file in uploaded_files:
         text = process_file(file)
@@ -181,10 +180,11 @@ else:
 absenden = st.button("Absenden")
 
 if absenden and prompt:
-    # Kontext für die KI: Alle bisherigen Antworten + Index
+    # Kontext: Alle bisherigen Antworten + gesamter Index
     context_df = st.session_state.combined_df
+    # Kontext auf ca. 8000 Zeichen beschränken (ggf. anpassen)
     context = context_df[['volltextindex', 'quelle']].to_string(index=False)
-    context = context[:5000]
+    context = context[:8000]
     with st.spinner("Antwort wird generiert ..."):
         answer = ask_question(prompt, context, chatgpt_model, api_key)
     st.session_state.chat_history.append({"question": prompt, "answer": answer})
