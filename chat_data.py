@@ -17,7 +17,38 @@ EXTRA_URLS = [
     "https://www.dnb.de/DE/Professionell/Services/WissenschaftundForschung/DNBLab/dnblabFreieDigitaleObjektsammlung.html?nn=849628"
 ]
 
-st.sidebar.title("Konfiguration")
+st.sidebar.title("Datenquellen auswählen und indexieren")
+
+# --- Indexierungs-Status in Session-State ---
+if "web_indexed" not in st.session_state:
+    st.session_state.web_indexed = False
+if "file_indexed" not in st.session_state:
+    st.session_state.file_indexed = dict()
+if "main_index" not in st.session_state:
+    st.session_state.main_index = pd.DataFrame(columns=["volltextindex", "quelle"])
+if "chat_history" not in st.session_state:
+    st.session_state.chat_history = []
+
+# --- Auswahl-Checkboxen ---
+web_selected = st.sidebar.checkbox("DNBLab-Webseiten indexieren", value=False)
+uploaded_files = st.sidebar.file_uploader(
+    "Dateien (Excel, PDF, Word, XML) hochladen und einzeln indexieren",
+    type=["xlsx", "xml", "pdf", "docx", "doc"],
+    accept_multiple_files=True
+)
+file_selected = {}
+for file in uploaded_files:
+    file_selected[file.name] = st.sidebar.checkbox(f"{file.name} indexieren", value=False)
+
+# --- Indexieren-Buttons ---
+if st.sidebar.button("Webseiten jetzt indexieren"):
+    st.session_state.web_indexed = False  # erzwinge Neuindexierung
+
+for file in uploaded_files:
+    if st.sidebar.button(f"{file.name} jetzt indexieren"):
+        st.session_state.file_indexed[file.name] = False
+
+# --- Modellwahl ---
 chatgpt_model = st.sidebar.selectbox(
     "ChatGPT Modell wählen",
     options=["gpt-3.5-turbo", "gpt-4-turbo"],
@@ -25,38 +56,12 @@ chatgpt_model = st.sidebar.selectbox(
 )
 st.sidebar.markdown(f"Verwendetes Modell: **{chatgpt_model}**")
 
-uploaded_files = st.sidebar.file_uploader(
-    "Dateien (Excel, PDF, Word, XML) hochladen",
-    type=["xlsx", "xml", "pdf", "docx", "doc"],
-    accept_multiple_files=True
-)
-index_button = st.sidebar.button("Indexieren")
-
 if "OPENAI_API_KEY" not in st.secrets:
     st.error("API-Key fehlt. Bitte in den Streamlit-Secrets hinterlegen.")
     st.stop()
 api_key = st.secrets["OPENAI_API_KEY"]
 
-def process_file(file):
-    if file.type == "application/pdf":
-        reader = PdfReader(file)
-        text = " ".join([page.extract_text() or "" for page in reader.pages])
-    elif file.type == "text/xml":
-        text = " ".join(ET.parse(file).getroot().itertext())
-    elif "wordprocessingml" in file.type or file.type == "application/vnd.openxmlformats-officedocument.wordprocessingml.document":
-        doc = Document(file)
-        text = " ".join([p.text for p in doc.paragraphs])
-    elif file.type in ("application/vnd.openxmlformats-officedocument.spreadsheetml.sheet", "application/vnd.ms-excel"):
-        try:
-            xls = pd.ExcelFile(file)
-            df = pd.read_excel(xls, sheet_name=xls.sheet_names[0], header=0, na_filter=False)
-            text = df.apply(lambda row: ' | '.join(str(cell) for cell in row if pd.notnull(cell)), axis=1).str.cat(sep=" || ")
-        except Exception:
-            text = ""
-    else:
-        text = ""
-    return text
-
+# --- Indexierung Webseiten ---
 @st.cache_data(show_spinner=True)
 def crawl_dnblab():
     client = httpx.Client(timeout=10, follow_redirects=True)
@@ -79,7 +84,6 @@ def crawl_dnblab():
             content = re.sub(r'\s+', ' ', content).strip()
             if content and len(content) > 50:
                 data.append({
-                    'datensetname': f"Web-Inhalt: {url}",
                     'volltextindex': content,
                     'quelle': url
                 })
@@ -94,11 +98,64 @@ def crawl_dnblab():
         except Exception as e:
             st.warning(f"Fehler beim Crawlen von {url}: {e}")
     if data:
-        df = pd.DataFrame(data)
-        df.columns = df.columns.str.strip().str.lower()
-        return df
+        return pd.DataFrame(data)
     else:
-        return pd.DataFrame(columns=["datensetname", "volltextindex", "quelle"])
+        return pd.DataFrame(columns=["volltextindex", "quelle"])
+
+# --- Datei-Indexierung ---
+def process_file(file):
+    if file.type == "application/pdf":
+        reader = PdfReader(file)
+        text = " ".join([page.extract_text() or "" for page in reader.pages])
+    elif file.type == "text/xml":
+        text = " ".join(ET.parse(file).getroot().itertext())
+    elif "wordprocessingml" in file.type or file.type == "application/vnd.openxmlformats-officedocument.wordprocessingml.document":
+        doc = Document(file)
+        text = " ".join([p.text for p in doc.paragraphs])
+    elif file.type in ("application/vnd.openxmlformats-officedocument.spreadsheetml.sheet", "application/vnd.ms-excel"):
+        try:
+            xls = pd.ExcelFile(file)
+            df = pd.read_excel(xls, sheet_name=xls.sheet_names[0], header=0, na_filter=False)
+            text = df.apply(lambda row: ' | '.join(str(cell) for cell in row if pd.notnull(cell)), axis=1).str.cat(sep=" || ")
+        except Exception:
+            text = ""
+    else:
+        text = ""
+    return text
+
+# --- Indexierung bei Button-Klick ---
+main_index = pd.DataFrame(columns=["volltextindex", "quelle"])
+
+if web_selected:
+    if not st.session_state.web_indexed:
+        with st.spinner("Indexiere Webseiten ..."):
+            web_df = crawl_dnblab()
+            st.session_state.web_index = web_df
+            st.session_state.web_indexed = True
+    if st.session_state.web_indexed:
+        main_index = pd.concat([main_index, st.session_state.web_index], ignore_index=True)
+
+for file in uploaded_files:
+    if file_selected.get(file.name, False):
+        if not st.session_state.file_indexed.get(file.name, False):
+            with st.spinner(f"Indexiere Datei {file.name} ..."):
+                text = process_file(file)
+                file_df = pd.DataFrame([{"volltextindex": text, "quelle": file.name}])
+                st.session_state.file_indexed[file.name] = True
+                st.session_state.file_index[file.name] = file_df
+        if st.session_state.file_indexed.get(file.name, False):
+            main_index = pd.concat([main_index, st.session_state.file_index[file.name]], ignore_index=True)
+
+st.session_state.main_index = main_index
+
+st.title("DNBLab-Chatbot")
+st.write(f"**Aktueller Index umfasst {len(main_index)} Einträge.**")
+st.markdown("**Quellen im Index:**")
+for q in main_index['quelle'].unique():
+    if isinstance(q, str) and q.startswith("http"):
+        st.markdown(f"- [{q}]({q})")
+    else:
+        st.markdown(f"- {q}")
 
 def full_text_search(df, query):
     try:
@@ -130,66 +187,16 @@ Frage: {question}
         st.error(f"Fehler bei OpenAI API-Abfrage: {e}")
         return "Fehler bei der Anfrage."
 
-st.title("DNBLab-Chatbot")
-
-# Indexe initialisieren
-if "web_df" not in st.session_state:
-    with st.spinner("Indexiere DNBLab-Webseiten ..."):
-        st.session_state.web_df = crawl_dnblab()
-if "file_dfs" not in st.session_state:
-    st.session_state.file_dfs = dict()
-if "chat_history" not in st.session_state:
-    st.session_state.chat_history = []
-
-# Nach Datei-Upload: Einzelne Indizes für jede Datei
-if index_button and uploaded_files:
-    for file in uploaded_files:
-        text = process_file(file)
-        if text.strip():
-            df_file = pd.DataFrame([{"volltextindex": text, "quelle": file.name}])
-            st.session_state.file_dfs[file.name] = df_file
-    st.success(f"{len(uploaded_files)} Datei(en) zum Index hinzugefügt.")
-
-# Checkbox-Auswahl für Web und jede Datei
-st.sidebar.markdown("**Quellen für die nächste Frage auswählen:**")
-web_selected = st.sidebar.checkbox("Webseiten-Index", value=True)
-file_selected = {}
-for fname in st.session_state.file_dfs:
-    file_selected[fname] = st.sidebar.checkbox(fname, value=True)
-
-# Indexe kombinieren nach Auswahl
-dfs = []
-herangezogene_quellen = []
-if web_selected:
-    dfs.append(st.session_state.web_df)
-    herangezogene_quellen.append("Webseiten-Index")
-for fname, selected in file_selected.items():
-    if selected:
-        dfs.append(st.session_state.file_dfs[fname])
-        herangezogene_quellen.append(fname)
-if dfs:
-    combined_df = pd.concat(dfs, ignore_index=True)
-else:
-    combined_df = pd.DataFrame(columns=["volltextindex", "quelle"])
-
-st.write(f"**Aktueller Index umfasst {len(combined_df)} Einträge.**")
-st.markdown("**Quellen im Index:**")
-for q in herangezogene_quellen:
-    st.markdown(f"- {q}")
-
 # Chat-Historie
 for i, entry in enumerate(st.session_state.chat_history):
     st.markdown(f"**Frage {i+1}:** {entry['question']}")
     st.markdown(f"**Antwort {i+1}:** {entry['answer']}")
-    st.markdown("**Verwendete Quellen (Treffer):**")
+    st.markdown("**Verwendete Quellen:**")
     for q in entry['sources']:
         if isinstance(q, str) and q.startswith("http"):
             st.markdown(f"- [{q}]({q})")
         else:
             st.markdown(f"- {q}")
-    st.markdown("**Herangezogene Quellen (Checkbox-Auswahl):**")
-    for q in entry['used_indices']:
-        st.markdown(f"- {q}")
     st.markdown("---")
 
 # Eingabefeld für neue Frage oder Nachfrage
@@ -202,7 +209,8 @@ absenden = st.button("Absenden")
 
 if absenden and prompt:
     # Kontext: Relevante Einträge suchen (max. 5 Treffer à 1000 Zeichen)
-    results = full_text_search(combined_df, prompt)
+    df = st.session_state.main_index
+    results = full_text_search(df, prompt)
     if not results.empty:
         context = "\n\n".join(
             f"Quelle: {row['quelle']}\nInhalt: {row['volltextindex'][:1000]}..."
@@ -214,10 +222,5 @@ if absenden and prompt:
         quellen = []
     with st.spinner("Antwort wird generiert ..."):
         answer = ask_question(prompt, context, chatgpt_model, api_key)
-    st.session_state.chat_history.append({
-        "question": prompt,
-        "answer": answer,
-        "sources": quellen,
-        "used_indices": herangezogene_quellen.copy()
-    })
+    st.session_state.chat_history.append({"question": prompt, "answer": answer, "sources": quellen})
     st.rerun()
