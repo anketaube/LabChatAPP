@@ -1,4 +1,3 @@
-# app.py
 import streamlit as st
 import pandas as pd
 import httpx
@@ -9,6 +8,7 @@ from PyPDF2 import PdfReader
 from docx import Document
 import xml.etree.ElementTree as ET
 
+# Basis-URL und Wunsch-URLs
 BASE_URL = "https://www.dnb.de/DE/Professionell/Services/WissenschaftundForschung/DNBLab"
 START_URL = BASE_URL + "/dnblab_node.html"
 EXTRA_URLS = [
@@ -18,101 +18,177 @@ EXTRA_URLS = [
     "https://www.dnb.de/DE/Professionell/Services/WissenschaftundForschung/DNBLab/dnblabFreieDigitaleObjektsammlung.html?nn=849628"
 ]
 
+# ------------------ Datei-Verarbeitung ------------------
 def process_file(file):
     if file.type == "application/pdf":
         reader = PdfReader(file)
-        text = " ".join([page.extract_text() for page in reader.pages])
+        text = " ".join([page.extract_text() or "" for page in reader.pages])
     elif file.type == "text/xml":
         text = " ".join(ET.parse(file).getroot().itertext())
-    elif "wordprocessingml" in file.type:
+    elif "wordprocessingml" in file.type or file.type == "application/vnd.openxmlformats-officedocument.wordprocessingml.document":
         doc = Document(file)
         text = " ".join([p.text for p in doc.paragraphs])
+    elif file.type in ("application/vnd.openxmlformats-officedocument.spreadsheetml.sheet", "application/vnd.ms-excel"):
+        try:
+            xls = pd.ExcelFile(file)
+            df = pd.read_excel(xls, sheet_name=xls.sheet_names[0], header=0, na_filter=False)
+            text = df.apply(lambda row: ' | '.join(str(cell) for cell in row if pd.notnull(cell)), axis=1).str.cat(sep=" || ")
+        except Exception:
+            text = ""
     else:
         text = ""
     return text
 
+# ------------------ Webseiten-Crawler ------------------
 @st.cache_data(show_spinner=True)
 def crawl_dnblab():
     client = httpx.Client(timeout=10, follow_redirects=True)
     visited = set()
     to_visit = set([START_URL] + EXTRA_URLS)
     data = []
-    
     while to_visit:
         url = to_visit.pop()
         if url in visited:
             continue
         visited.add(url)
-        
         try:
             resp = client.get(url)
             if resp.status_code != 200:
                 continue
-                
             selector = Selector(resp.text)
-            content = ' '.join(selector.xpath('//main//text() | //div[@role="main"]//text()').getall())
+            content = ' '.join(selector.xpath(
+                '//main//text() | //div[@role="main"]//text() | //body//text() | //article//text() | //section//text() | //p//text() | //li//text()'
+            ).getall())
             content = re.sub(r'\s+', ' ', content).strip()
-            
             if content and len(content) > 50:
                 data.append({
                     'datensetname': f"Web-Inhalt: {url}",
                     'volltextindex': content,
                     'quelle': url
                 })
-                
+            # Interne Links sammeln
             for link in selector.xpath('//a/@href').getall():
                 full_url = urljoin(url, link).split('#')[0]
-                if full_url.startswith(BASE_URL) and full_url not in visited:
+                if (
+                    full_url.startswith(BASE_URL)
+                    and full_url not in visited
+                    and full_url not in to_visit
+                ):
                     to_visit.add(full_url)
-                    
         except Exception as e:
             st.warning(f"Fehler beim Crawlen von {url}: {e}")
-    
-    return pd.DataFrame(data) if data else None
+    if data:
+        df = pd.DataFrame(data)
+        df.columns = df.columns.str.strip().str.lower()
+        return df
+    else:
+        return pd.DataFrame(columns=["datensetname", "volltextindex", "quelle"])
 
-# Session State Initialisierung
-if 'combined_df' not in st.session_state:
-    st.session_state.combined_df = crawl_dnblab()
-if 'chat_history' not in st.session_state:
-    st.session_state.chat_history = []
+# ------------------ OpenAI Abfrage ------------------
+def ask_question(question, context, model, api_key):
+    try:
+        from openai import OpenAI
+        client = OpenAI(api_key=api_key)
+        prompt = f"""
+Du bist ein Datenexperte für die DNB-Datensätze.
+Hier sind die Daten mit Quellenangaben:
+{context}
+Beantworte die folgende Frage basierend auf den Daten oben in ganzen Sätzen.
+Gib immer die Quelle der Information an (entweder Excel-Datei, Web-URL oder Dateiname).
+Frage: {question}
+"""
+        response = client.chat.completions.create(
+            model=model,
+            messages=[{"role": "user", "content": prompt}],
+            temperature=0.3
+        )
+        return response.choices[0].message.content
+    except Exception as e:
+        st.error(f"Fehler bei OpenAI API-Abfrage: {e}")
+        return "Fehler bei der Anfrage."
 
-# Sidebar
+# ------------------ Streamlit UI ------------------
+st.title("DNBLab-Chatbot")
+
+if "OPENAI_API_KEY" not in st.secrets:
+    st.error("API-Key fehlt. Bitte in den Streamlit-Secrets hinterlegen.")
+    st.stop()
+api_key = st.secrets["OPENAI_API_KEY"]
+
+# Sidebar: Modell und Datei-Upload
 st.sidebar.title("Konfiguration")
+chatgpt_model = st.sidebar.selectbox(
+    "ChatGPT Modell wählen",
+    options=["gpt-3.5-turbo", "gpt-4-turbo"],
+    index=1
+)
+st.sidebar.markdown(f"Verwendetes Modell: **{chatgpt_model}**")
+
 uploaded_files = st.sidebar.file_uploader(
-    "Dateien hochladen",
+    "Dateien (Excel, PDF, Word, XML) hochladen",
     type=["xlsx", "xml", "pdf", "docx", "doc"],
     accept_multiple_files=True
 )
+upload_button = st.sidebar.button("Hochladen")
 
-# Dateiverarbeitung
-if uploaded_files:
-    file_data = [process_file(file) for file in uploaded_files]
-    files_df = pd.DataFrame({
-        'volltextindex': file_data,
-        'quelle': [file.name for file in uploaded_files]
-    })
-    st.session_state.combined_df = pd.concat([st.session_state.combined_df, files_df])
+# Session State für Index und Chat
+if "web_df" not in st.session_state:
+    with st.spinner("Indexiere DNBLab-Webseiten ..."):
+        st.session_state.web_df = crawl_dnblab()
+if "file_df" not in st.session_state:
+    st.session_state.file_df = pd.DataFrame(columns=["volltextindex", "quelle"])
+if "combined_df" not in st.session_state:
+    st.session_state.combined_df = st.session_state.web_df.copy()
+if "chat_history" not in st.session_state:
+    st.session_state.chat_history = []
 
-# Chat-Historie anzeigen
-for entry in st.session_state.chat_history:
-    st.markdown(f"**Frage:** {entry['question']}") 
-    st.markdown(f"**Antwort:** {entry['answer']} [Quelle: {entry['source']}]")
+# Nach Datei-Upload: Index erweitern
+if upload_button and uploaded_files:
+    file_data = []
+    for file in uploaded_files:
+        text = process_file(file)
+        if text.strip():
+            file_data.append({
+                "volltextindex": text,
+                "quelle": file.name
+            })
+    if file_data:
+        new_file_df = pd.DataFrame(file_data)
+        st.session_state.file_df = pd.concat([st.session_state.file_df, new_file_df], ignore_index=True)
+        st.session_state.combined_df = pd.concat([st.session_state.web_df, st.session_state.file_df], ignore_index=True)
+        st.success(f"{len(file_data)} Datei(en) zum Index hinzugefügt.")
+    else:
+        st.warning("Keine verwertbaren Inhalte in den hochgeladenen Dateien gefunden.")
 
-# Hauptanwendung
-st.title("DNBLab-Chatbot")
-query = st.text_input("Suchbegriff oder Frage eingeben:")
+# Index-Info
+st.write(f"**Aktueller Index umfasst {len(st.session_state.combined_df)} Einträge.**")
+st.markdown("**Quellen im Index:**")
+for url in sorted(st.session_state.combined_df['quelle'].unique()):
+    st.markdown(f"- {url}")
 
-if query:
-    # Hier würde die Such- und Antwortlogik integriert werden
-    # Beispielantwort zur Demonstration
-    sources = st.session_state.combined_df['quelle'].unique().tolist()
-    answer = f"Beispielantwort zur Frage: {query} [Quelle: {', '.join(sources[:3])}]"
-    
-    # Eintrag in Chat-Historie
-    st.session_state.chat_history.append({
-        'question': query,
-        'answer': answer,
-        'source': ', '.join(sources[:3])
-    })
-    
-    st.write(answer)
+# Chat-UI: Verlauf & Prompt-Chaining
+for i, entry in enumerate(st.session_state.chat_history):
+    st.markdown(f"**Frage {i+1}:** {entry['question']}")
+    st.markdown(f"**Antwort {i+1}:** {entry['answer']}")
+    st.markdown("---")
+
+# Eingabefeld für neue Frage oder Nachfrage
+if len(st.session_state.chat_history) == 0:
+    prompt = st.text_input("Frage eingeben:", key="input_0")
+else:
+    prompt = st.text_input("Nachfrage eingeben:", key=f"input_{len(st.session_state.chat_history)}")
+
+if prompt:
+    # Kontext für die KI: Alle bisherigen Antworten + Index
+    if len(st.session_state.chat_history) == 0:
+        context_df = st.session_state.combined_df
+    else:
+        # Kontext: Bisherige Antworten + Indexdaten
+        context_df = st.session_state.combined_df
+    # Kontext auf max. 5000 Zeichen beschränken (API-Limit)
+    context = context_df[['volltextindex', 'quelle']].to_string(index=False)
+    context = context[:5000]
+    with st.spinner("Antwort wird generiert ..."):
+        answer = ask_question(prompt, context, chatgpt_model, api_key)
+    st.session_state.chat_history.append({"question": prompt, "answer": answer})
+    st.experimental_rerun()
