@@ -70,7 +70,7 @@ def crawl_dnblab():
         df.columns = df.columns.str.strip().str.lower()
         return df
     else:
-        return None
+        return pd.DataFrame(columns=["datensetname", "volltextindex", "quelle"])
 
 @st.cache_data
 def load_excel(file):
@@ -83,7 +83,7 @@ def load_excel(file):
         return df
     except Exception as e:
         st.error(f"Fehler beim Laden der Excel-Datei: {e}")
-        return None
+        return pd.DataFrame(columns=["volltextindex", "quelle"])
 
 def full_text_search(df, query):
     try:
@@ -117,23 +117,25 @@ Frage: {question}
 
 st.title("DNBLab-Chatbot")
 
-df = None
-
+# Indexieren und kombinieren
+df = pd.DataFrame(columns=["volltextindex", "quelle"])
 if data_source == "Excel-Datei":
     uploaded_file = st.sidebar.file_uploader("Excel-Datei hochladen", type=["xlsx"])
     if uploaded_file:
         with st.spinner("Excel-Datei wird geladen..."):
-            df = load_excel(uploaded_file)
+            df_excel = load_excel(uploaded_file)
+            df = pd.concat([df, df_excel], ignore_index=True)
 elif data_source == "DNBLab-Webseite":
     st.sidebar.info("Es wird die DNBLab-Webseite inkl. aller Unterseiten indexiert. Das kann einige Sekunden dauern.")
     with st.spinner("DNBLab-Webseite wird indexiert..."):
-        df = crawl_dnblab()
+        df_web = crawl_dnblab()
+        df = pd.concat([df, df_web], ignore_index=True)
 
-if df is None or df.empty:
+if df.empty:
     st.info("Bitte laden Sie eine Excel-Datei hoch oder wählen Sie die DNBLab-Webseite aus der Sidebar.")
 else:
     st.write(f"Geladene Datensätze: {len(df)}")
-    st.markdown("**Folgende Seiten wurden indexiert:**")
+    st.markdown("**Folgende Quellen wurden indexiert:**")
     for url in sorted(df['quelle'].unique()):
         if url.startswith("http"):
             st.markdown(f"- [{url}]({url})")
