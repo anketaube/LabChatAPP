@@ -37,7 +37,6 @@ if "OPENAI_API_KEY" not in st.secrets:
     st.stop()
 api_key = st.secrets["OPENAI_API_KEY"]
 
-# ------------------ Datei-Verarbeitung ------------------
 def process_file(file):
     if file.type == "application/pdf":
         reader = PdfReader(file)
@@ -58,7 +57,6 @@ def process_file(file):
         text = ""
     return text
 
-# ------------------ Webseiten-Crawler ------------------
 @st.cache_data(show_spinner=True)
 def crawl_dnblab():
     client = httpx.Client(timeout=10, follow_redirects=True)
