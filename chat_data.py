@@ -1,224 +1,167 @@
 import streamlit as st
 import pandas as pd
-from openai import OpenAI
-import os
-import random
-import time
+import httpx
+from parsel import Selector
+import re
+from urllib.parse import urljoin
 
-LOG = "questions.log"
+# Basis-URL und Wunsch-URLs
+BASE_URL = "https://www.dnb.de/DE/Professionell/Services/WissenschaftundForschung/DNBLab"
+START_URL = BASE_URL + "/dnblab_node.html"
+EXTRA_URLS = [
+    "https://www.dnb.de/DE/Professionell/Services/WissenschaftundForschung/DNBLab/dnblabTutorials.html?nn=849628",
+    "https://www.dnb.de/DE/Professionell/Services/WissenschaftundForschung/DNBLabPraxis/dnblabPraxis_node.html",
+    "https://www.dnb.de/DE/Professionell/Services/WissenschaftundForschung/DNBLab/dnblabSchnittstellen.html?nn=849628",
+    "https://www.dnb.de/DE/Professionell/Services/WissenschaftundForschung/DNBLab/dnblabFreieDigitaleObjektsammlung.html?nn=849628"
+    # Weitere Wunsch-URLs einfach ergÃ¤nzen!
+]
 
-@st.cache_data()
-def load_data(file):
-    """
-    Load the data.
-    """
-    df = pd.read_csv(file, encoding="utf-8", delimiter=",")
-    return pre_process(df)
+st.sidebar.title("Konfiguration")
+data_source = st.sidebar.radio("Datenquelle wÃ¤hlen:", ["Excel-Datei", "DNBLab-Webseite"])
 
-def add_to_log(question):
-    """
-    Log the question
-    """
-    with open(LOG, "a") as f:
-        f.write(time.strftime("%Y-%m-%d %H:%M:%S") + " ")
-        f.write(question + "\n") 
-        f.flush()
+chatgpt_model = st.sidebar.selectbox(
+    "ChatGPT Modell wÃ¤hlen",
+    options=["gpt-3.5-turbo", "gpt-4-turbo"],
+    index=1
+)
+st.sidebar.markdown(f"Verwendetes Modell: **{chatgpt_model}**")
 
-def pre_process(df):
-    """
-    Pre-process the data.
-    """
-    # Drop columns that start with "Unnamed"
-    for col in df.columns:
-        if col.startswith("Unnamed"):
-            df = df.drop(col, axis=1)
-    return df
+if "OPENAI_API_KEY" not in st.secrets:
+    st.error("API-Key fehlt. Bitte in den Streamlit-Secrets hinterlegen.")
+    st.stop()
+api_key = st.secrets["OPENAI_API_KEY"]
 
-def ask_question(question, system="You are a data scientist."):
-    """
-    Ask a question and return the answer.
-    """ 
-    client = OpenAI()
-    messages = [
-        {"role": "system", "content": system},
-        {"role": "user", "content": question}
-        ]
-    response = client.chat.completions.create(
-        model="gpt-3.5-turbo",
-        messages=messages,
-        temperature=0,
-        stop = ["plt.show()", "st.pyplot(fig)"]
-        )
-    answer = response.choices[0].message.content
-    return answer
+@st.cache_data(show_spinner=True)
+def crawl_dnblab():
+    client = httpx.Client(timeout=10, follow_redirects=True)
+    visited = set()
+    to_visit = set([START_URL] + EXTRA_URLS)
+    data = []
 
-def ask_question_with_retry(question, system="You are a data scientist.", retries=1):
-    """
-    Wrapper around ask_question that retries if it fails.
-    Proactively wait for the rate limit to reset. Eg for a rate limit of 20 calls per minutes, wait for at least 2 seconds
-    Compute delay using an exponential backoff, so we don't exceed the rate limit.
-    """
-    delay = 2 * (1 + random.random())
-    time.sleep(delay)
-    for i in range(retries):
+    while to_visit:
+        url = to_visit.pop()
+        if url in visited:
+            continue
+        visited.add(url)
         try:
-            return ask_question(question, system=system)
+            resp = client.get(url)
+            if resp.status_code != 200:
+                continue
+            selector = Selector(resp.text)
+            # Hauptinhalt extrahieren
+            content = ' '.join(selector.xpath(
+                '//main//text() | //div[@role="main"]//text() | //body//text() | //article//text() | //section//text() | //p//text() | //li//text()'
+            ).getall())
+            content = re.sub(r'\s+', ' ', content).strip()
+            if content and len(content) > 50:
+                data.append({
+                    'datensetname': f"Web-Inhalt: {url}",
+                    'volltextindex': content,
+                    'quelle': url
+                })
+            # Interne Links sammeln
+            for link in selector.xpath('//a/@href').getall():
+                full_url = urljoin(url, link).split('#')[0]
+                if (
+                    full_url.startswith(BASE_URL)
+                    and full_url not in visited
+                    and full_url not in to_visit
+                ):
+                    to_visit.add(full_url)
         except Exception as e:
-            delay = 2 * delay
-            time.sleep(delay)
-    return None
+            st.warning(f"Fehler beim Crawlen von {url}: {e}")
 
-def prepare_question(description, question, initial_code):
-    """
-    Prepare a question for the chatbot.
-    """
-    return f"""
-Context:
-{description}
-Question: {question}
-Answer:
-{initial_code}
-"""
+    if data:
+        df = pd.DataFrame(data)
+        df.columns = df.columns.str.strip().str.lower()
+        return df
+    else:
+        return None
 
-def describe_dataframe(df):
-    """
-    Describe the dataframe.
-    """
-    description = []
-    # List the columns of the dataframe
-    description.append(f"The dataframe df has the following columns: {', '.join(df.columns)}.")
+@st.cache_data
+def load_excel(file):
     try:
-        # For each column with a categorical variable, list the unique values
-        if cols := check_categorical_variables(df):
-            return f"ERROR: All values in a categorical variable must be strings: {', '.join(cols)}." 
-        for column in df.columns:
-            if df[column].dtype == "object" and len(df[column].unique()) < 10:
-                description.append(f"Column {column} has the following levels: {', '.join(df[column].dropna().unique())}.")
-            elif df[column].dtype == "int64" or df[column].dtype == "float64":
-                description.append(f"Column {column} is a numerical variable.")
-        description.append("Add a title to the plot.")
-        description.append("Label the x and y axes of the plot.")
-        description.append("Do not generate a new dataframe.")
+        xls = pd.ExcelFile(file)
+        df = pd.read_excel(xls, sheet_name=xls.sheet_names[0], header=0, na_filter=False)
+        df['volltextindex'] = df.apply(lambda row: ' | '.join(str(cell) for cell in row if pd.notnull(cell)), axis=1)
+        df['quelle'] = "Excel-Datei"
+        df.columns = df.columns.str.strip().str.lower()
+        return df
     except Exception as e:
-        add_to_log("Error: Unexpected error with the dataset.")
-        return "Unexpected error with the dataset."
-    return "\n".join(description)
+        st.error(f"Fehler beim Laden der Excel-Datei: {e}")
+        return None
 
-def check_categorical_variables(df):
-    """
-    Check that all values of categorical variables are strings.
-    """
-    # Return [] if all values of categorical variables are strings
-    # Return columns if not all values of categorical variables are strings
-    return [column for column in df.columns if df[column].dtype == "object" 
-        and not all(isinstance(x, str) for x in df[column].dropna().unique())]
+def full_text_search(df, query):
+    try:
+        mask = df['volltextindex'].str.lower().str.contains(query.lower())
+        return df[mask]
+    except Exception:
+        return pd.DataFrame()
 
-def list_non_categorical_values(df, column):
-    """
-    List the non-categorical values in a column.
-    """
-    return [x for x in df[column].unique() if not isinstance(x, str)]
+def ask_question(question, context, model):
+    try:
+        from openai import OpenAI
+        client = OpenAI(api_key=api_key)
+        prompt = f"""
+Du bist ein Datenexperte fÃ¼r die DNB-DatensÃ¤tze.
+Hier sind die Daten mit Quellenangaben:
+{context}
 
-def code_prefix():
-    """
-    Code to prefix to the visualization code.
-    """
-    return """
-import streamlit as st
-import pandas as pd
-import matplotlib.pyplot as plt
-
-fig, ax = plt.subplots(figsize=(6.4, 2.4))
+Beantworte die folgende Frage basierend auf den Daten oben in ganzen SÃ¤tzen.
+Gib immer die Quelle der Information an (entweder Excel-Datei oder Web-URL).
+Frage: {question}
 """
-    
-def generate_placeholder_question(df):
-    return "Show the relationship between x and y."
+        response = client.chat.completions.create(
+            model=model,
+            messages=[{"role": "user", "content": prompt}],
+            temperature=0.3
+        )
+        return response.choices[0].message.content
+    except Exception as e:
+        st.error(f"Fehler bei OpenAI API-Abfrage: {e}")
+        return "Fehler bei der Anfrage."
 
-def test_ask_question():
-    system = "Write Python code to answer the following question. Do not include comments."
-    question = "Generate a function that returns the ratio of two subsequent Fibonacci numbers."
-    answer = ask_question_with_retry(question, system=system)
-    print(answer)
+st.title("DNBLab-Chatbot")
 
-def test_describe_dataframe():
-    import pandas as pd
-    df = pd.DataFrame({
-        "a": ["male", "female", "male"], 
-        "b": [4, 5, 6],
-        "c": ["yes", "no", "yes"]})
-    description = describe_dataframe(df)
-    print(description)
+df = None
 
-def test_visualize_dataframe():
-    import pandas as pd
-    df = pd.DataFrame({
-        "a": ["male", "female", "male"], 
-        "b": [4, 5, 6],
-        "c": ["yes", "no", "yes"]})
-    question = "Show the relationship between a and c."
-    description = describe_dataframe(df)
-    initial_code = code_prefix()
-    print(prepare_question(description, question, initial_code))
+if data_source == "Excel-Datei":
+    uploaded_file = st.sidebar.file_uploader("Excel-Datei hochladen", type=["xlsx"])
+    if uploaded_file:
+        with st.spinner("Excel-Datei wird geladen..."):
+            df = load_excel(uploaded_file)
+elif data_source == "DNBLab-Webseite":
+    st.sidebar.info("Es wird die DNBLab-Webseite inkl. aller Unterseiten indexiert. Das kann einige Sekunden dauern.")
+    with st.spinner("DNBLab-Webseite wird indexiert..."):
+        df = crawl_dnblab()
 
-def test_visualize_dataframe_with_chat():
-    import pandas as pd
-    df = pd.DataFrame({
-        "a": ["male", "female", "male"], 
-        "b": [4, 5, 6],
-        "c": ["yes", "no", "yes"]})
-    question = "Show the relationship between a and c."
-    description = describe_dataframe(df)
-    initial_code = code_prefix()
-    answer = ask_question_with_retry(prepare_question(description, question, initial_code))
-    print(initial_code + answer)
-
-st.title("Chat with your data")
-
-uploaded_file = st.sidebar.file_uploader("Upload a dataset", type="csv")
-
-if uploaded_file:
-    df = load_data(uploaded_file)
-
-    with st.chat_message("assistant"):
-        st.markdown("Here is a table with the data:")
-        st.dataframe(df, height=200)
-
-    question = st.chat_input(placeholder=generate_placeholder_question(df))
-
-    if question:
-        with st.chat_message("user"):
-            st.markdown(question)
-
-        add_to_log(f"Question: {question}")
-            
-        description = describe_dataframe(df)
-        if "ERROR" in description:
-            with st.chat_message("assistant"):
-                st.markdown(description)
-        else:
-            initial_code = code_prefix()
-            with st.spinner("Thinking..."):
-                answer = ask_question_with_retry(prepare_question(description, question, initial_code))
-            with st.chat_message("assistant"):
-                if answer:
-                    script = initial_code + answer + "st.pyplot(fig)"
-                    try:
-                        exec(script)
-                        st.markdown("Here is the code used to create the plot:")
-                        st.code(script, language="python")
-                    except Exception as e:
-                        add_to_log("Error: Could not generate code to answer this question.")
-                        st.info("I could not generate code to answer this question. " +
-                            "Try asking it in a different way.")
-                else:
-                    add_to_log("Error: Request timed out.")
-                    st.markdown("Request timed out. Please wait and resubmit your question.")
+if df is None or df.empty:
+    st.info("Bitte laden Sie eine Excel-Datei hoch oder wÃ¤hlen Sie die DNBLab-Webseite aus der Sidebar.")
 else:
-    with st.chat_message("assistant"):
-        st.markdown("Upload a dataset to get started.")
-
-# if __name__ == "__main__":    
-#     # test_ask_question()
-#     # test_describe_dataframe()
-#     # test_visualize_dataframe()
-#     test_visualize_dataframe_with_chat()
+    st.write(f"Geladene DatensÃ¤tze: {len(df)}")
+    st.markdown("**Folgende Seiten wurden indexiert:**")
+    for url in sorted(df['quelle'].unique()):
+        st.markdown(f"- [{url}]({url})")
+    query = st.text_input("Suchbegriff oder Frage eingeben:")
+    if query:
+        question_words = ["wie", "was", "welche", "wann", "warum", "wo", "wieviel", "wieviele", "zÃ¤hl", "nenn", "gibt", "zeige"]
+        is_question = any(query.lower().startswith(word) for word in question_words)
+        if is_question:
+            context = df[['volltextindex', 'quelle']].to_string(index=False)
+            with st.spinner("Frage wird analysiert..."):
+                answer = ask_question(query, context, chatgpt_model)
+            st.subheader("Antwort des Sprachmodells:")
+            st.write(answer)
+        else:
+            results = full_text_search(df, query)
+            if not results.empty:
+                st.subheader("Suchergebnisse")
+                display_cols = ['quelle'] + [col for col in ['datensetname', 'datenformat', 'kategorie 1', 'kategorie 2'] if col in results.columns]
+                st.dataframe(results[display_cols] if display_cols else results)
+                context = results[['volltextindex', 'quelle']].to_string(index=False)
+                with st.spinner("Analysiere Treffer..."):
+                    answer = ask_question(query, context, chatgpt_model)
+                st.subheader("ErgÃ¤nzende Antwort des Sprachmodells:")
+                st.write(answer)
+            else:
+                st.warning("Keine Treffer gefunden.")
