@@ -4,10 +4,8 @@ import httpx
 from parsel import Selector
 import re
 from urllib.parse import urljoin
-from PyPDF2 import PdfReader
-from docx import Document
-import xml.etree.ElementTree as ET
 
+# Basis-URL und Wunsch-URLs
 BASE_URL = "https://www.dnb.de/DE/Professionell/Services/WissenschaftundForschung/DNBLab"
 START_URL = BASE_URL + "/dnblab_node.html"
 EXTRA_URLS = [
@@ -17,23 +15,8 @@ EXTRA_URLS = [
     "https://www.dnb.de/DE/Professionell/Services/WissenschaftundForschung/DNBLab/dnblabFreieDigitaleObjektsammlung.html?nn=849628"
 ]
 
-st.sidebar.title("Quellen auswählen")
-# Checkbox für Web
-web_selected = st.sidebar.checkbox("DNBLab-Webseiten", value=False)
-# Fileuploader und Checkboxen für jede Datei
-uploaded_files = st.sidebar.file_uploader(
-    "Dateien (Excel, PDF, Word, XML) hochladen",
-    type=["xlsx", "xml", "pdf", "docx", "doc"],
-    accept_multiple_files=True
-)
-file_selected = {}
-for file in uploaded_files:
-    file_selected[file.name] = st.sidebar.checkbox(f"{file.name}", value=True)
-
-# Indexieren-Button
-index_button = st.sidebar.button("Indexieren")
-
-# Modellwahl
+st.sidebar.title("Konfiguration")
+data_source = st.sidebar.radio("Datenquelle wählen:", ["Excel-Datei", "DNBLab-Webseite"])
 chatgpt_model = st.sidebar.selectbox(
     "ChatGPT Modell wählen",
     options=["gpt-3.5-turbo", "gpt-4-turbo"],
@@ -46,7 +29,6 @@ if "OPENAI_API_KEY" not in st.secrets:
     st.stop()
 api_key = st.secrets["OPENAI_API_KEY"]
 
-# Indexierfunktionen
 @st.cache_data(show_spinner=True)
 def crawl_dnblab():
     client = httpx.Client(timeout=10, follow_redirects=True)
@@ -69,6 +51,7 @@ def crawl_dnblab():
             content = re.sub(r'\s+', ' ', content).strip()
             if content and len(content) > 50:
                 data.append({
+                    'datensetname': f"Web-Inhalt: {url}",
                     'volltextindex': content,
                     'quelle': url
                 })
@@ -83,68 +66,24 @@ def crawl_dnblab():
         except Exception as e:
             st.warning(f"Fehler beim Crawlen von {url}: {e}")
     if data:
-        return pd.DataFrame(data)
+        df = pd.DataFrame(data)
+        df.columns = df.columns.str.strip().str.lower()
+        return df
     else:
-        return pd.DataFrame(columns=["volltextindex", "quelle"])
+        return None
 
-def process_file(file):
-    if file.type == "application/pdf":
-        reader = PdfReader(file)
-        text = " ".join([page.extract_text() or "" for page in reader.pages])
-    elif file.type == "text/xml":
-        text = " ".join(ET.parse(file).getroot().itertext())
-    elif "wordprocessingml" in file.type or file.type == "application/vnd.openxmlformats-officedocument.wordprocessingml.document":
-        doc = Document(file)
-        text = " ".join([p.text for p in doc.paragraphs])
-    elif file.type in ("application/vnd.openxmlformats-officedocument.spreadsheetml.sheet", "application/vnd.ms-excel"):
-        try:
-            xls = pd.ExcelFile(file)
-            df = pd.read_excel(xls, sheet_name=xls.sheet_names[0], header=0, na_filter=False)
-            text = df.apply(lambda row: ' | '.join(str(cell) for cell in row if pd.notnull(cell)), axis=1).str.cat(sep=" || ")
-        except Exception:
-            text = ""
-    else:
-        text = ""
-    return text
-
-# Session State für Index und Chat
-if "main_index" not in st.session_state:
-    st.session_state.main_index = pd.DataFrame(columns=["volltextindex", "quelle"])
-if "chat_history" not in st.session_state:
-    st.session_state.chat_history = []
-
-# Indexieren bei Button-Klick
-if index_button:
-    entries = []
-    if web_selected:
-        with st.spinner("Indexiere Webseiten ..."):
-            web_df = crawl_dnblab()
-            for _, row in web_df.iterrows():
-                entries.append({
-                    "volltextindex": row["volltextindex"],
-                    "quelle": row["quelle"]
-                })
-    for file in uploaded_files:
-        if file_selected.get(file.name, False):
-            with st.spinner(f"Indexiere Datei {file.name} ..."):
-                text = process_file(file)
-                if text.strip():
-                    entries.append({
-                        "volltextindex": text,
-                        "quelle": file.name
-                    })
-    st.session_state.main_index = pd.DataFrame(entries, columns=["volltextindex", "quelle"])
-    st.success(f"Index enthält {len(st.session_state.main_index)} Einträge.")
-
-st.title("DNBLab-Chatbot")
-main_index = st.session_state.main_index
-st.write(f"**Aktueller Index umfasst {len(main_index)} Einträge.**")
-st.markdown("**Quellen im Index:**")
-for q in main_index['quelle'].unique():
-    if isinstance(q, str) and q.startswith("http"):
-        st.markdown(f"- [{q}]({q})")
-    else:
-        st.markdown(f"- {q}")
+@st.cache_data
+def load_excel(file):
+    try:
+        xls = pd.ExcelFile(file)
+        df = pd.read_excel(xls, sheet_name=xls.sheet_names[0], header=0, na_filter=False)
+        df['volltextindex'] = df.apply(lambda row: ' | '.join(str(cell) for cell in row if pd.notnull(cell)), axis=1)
+        df['quelle'] = "Excel-Datei"
+        df.columns = df.columns.str.strip().str.lower()
+        return df
+    except Exception as e:
+        st.error(f"Fehler beim Laden der Excel-Datei: {e}")
+        return None
 
 def full_text_search(df, query):
     try:
@@ -153,22 +92,21 @@ def full_text_search(df, query):
     except Exception:
         return pd.DataFrame()
 
-def ask_question(question, context, model, api_key):
+def ask_question(question, context, model):
     try:
         from openai import OpenAI
         client = OpenAI(api_key=api_key)
         prompt = f"""
-Hier sind Daten aus verschiedenen Quellen (Web-URLs und Dateinamen).
-Nutze diese Daten, um die folgende Frage zu beantworten. Wenn du Informationen verwendest, gib bitte die Quelle (URL oder Dateiname) mit an.
-Frage: {question}
+Du bist ein Datenexperte für die DNB-Datensätze.
+Hier sind die Daten mit Quellenangaben:
 {context}
+Beantworte die folgende Frage basierend auf den Daten oben in ganzen Sätzen.
+Gib immer die Quelle der Information an (entweder Excel-Datei oder Web-URL).
+Frage: {question}
 """
         response = client.chat.completions.create(
             model=model,
-            messages=[
-                {"role": "system", "content": "Du bist ein Datenexperte für die DNB-Datensätze."},
-                {"role": "user", "content": prompt}
-            ],
+            messages=[{"role": "user", "content": prompt}],
             temperature=0.3
         )
         return response.choices[0].message.content
@@ -176,40 +114,56 @@ Frage: {question}
         st.error(f"Fehler bei OpenAI API-Abfrage: {e}")
         return "Fehler bei der Anfrage."
 
-# Chat-Historie
-for i, entry in enumerate(st.session_state.chat_history):
-    st.markdown(f"**Frage {i+1}:** {entry['question']}")
-    st.markdown(f"**Antwort {i+1}:** {entry['answer']}")
-    st.markdown("**Verwendete Quellen:**")
-    for q in entry['sources']:
-        if isinstance(q, str) and q.startswith("http"):
-            st.markdown(f"- [{q}]({q})")
-        else:
-            st.markdown(f"- {q}")
-    st.markdown("---")
+# Session State für Verlauf
+if "chat_history" not in st.session_state:
+    st.session_state.chat_history = []
 
-# Eingabefeld für neue Frage oder Nachfrage
-if len(st.session_state.chat_history) == 0:
-    prompt = st.text_input("Frage eingeben:", key="input_0")
+st.title("DNBLab-Chatbot")
+
+df = None
+if data_source == "Excel-Datei":
+    uploaded_file = st.sidebar.file_uploader("Excel-Datei hochladen", type=["xlsx"])
+    if uploaded_file:
+        with st.spinner("Excel-Datei wird geladen..."):
+            df = load_excel(uploaded_file)
+elif data_source == "DNBLab-Webseite":
+    st.sidebar.info("Es wird die DNBLab-Webseite inkl. aller Unterseiten indexiert. Das kann einige Sekunden dauern.")
+    with st.spinner("DNBLab-Webseite wird indexiert..."):
+        df = crawl_dnblab()
+
+if df is None or df.empty:
+    st.info("Bitte laden Sie eine Excel-Datei hoch oder wählen Sie die DNBLab-Webseite aus der Sidebar.")
 else:
-    prompt = st.text_input("Nachfrage eingeben:", key=f"input_{len(st.session_state.chat_history)}")
+    st.write(f"Geladene Datensätze: {len(df)}")
+    st.markdown("**Folgende Seiten wurden indexiert:**")
+    for url in sorted(df['quelle'].unique()):
+        st.markdown(f"- [{url}]({url})" if url.startswith("http") else f"- {url}")
 
-absenden = st.button("Absenden")
+    # Chatverlauf anzeigen
+    for i, entry in enumerate(st.session_state.chat_history):
+        st.markdown(f"**Frage {i+1}:** {entry['question']}")
+        st.markdown(f"**Antwort {i+1}:** {entry['answer']}")
+        st.markdown("---")
 
-if absenden and prompt:
-    # Kontext: Relevante Einträge suchen (max. 5 Treffer à 1000 Zeichen)
-    df = st.session_state.main_index
-    results = full_text_search(df, prompt)
-    if not results.empty:
-        context = "\n\n".join(
-            f"Quelle: {row['quelle']}\nInhalt: {row['volltextindex'][:1000]}..."
-            for _, row in results.head(5).iterrows()
-        )
-        quellen = results['quelle'].unique().tolist()
-    else:
-        context = ""
-        quellen = []
-    with st.spinner("Antwort wird generiert ..."):
-        answer = ask_question(prompt, context, chatgpt_model, api_key)
-    st.session_state.chat_history.append({"question": prompt, "answer": answer, "sources": quellen})
-    st.rerun()
+    # Promptfeld unterhalb der letzten Antwort
+    prompt = st.text_input("Frage oder Nachfrage eingeben:", key=f"prompt_{len(st.session_state.chat_history)}")
+    absenden = st.button("Absenden")
+
+    if absenden and prompt:
+        # Frage oder Suchbegriff?
+        question_words = ["wie", "was", "welche", "wann", "warum", "wo", "wieviel", "wieviele", "zähl", "nenn", "gibt", "zeige"]
+        is_question = any(prompt.lower().startswith(word) for word in question_words)
+
+        if is_question:
+            context = df[['volltextindex', 'quelle']].to_string(index=False)
+        else:
+            results = full_text_search(df, prompt)
+            if not results.empty:
+                context = results[['volltextindex', 'quelle']].to_string(index=False)
+            else:
+                context = ""
+
+        with st.spinner("Antwort wird generiert..."):
+            answer = ask_question(prompt, context, chatgpt_model)
+        st.session_state.chat_history.append({"question": prompt, "answer": answer})
+        st.rerun()
