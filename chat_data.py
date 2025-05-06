@@ -188,4 +188,4 @@ if absenden and prompt:
     with st.spinner("Antwort wird generiert ..."):
         answer = ask_question(prompt, context, chatgpt_model, api_key)
     st.session_state.chat_history.append({"question": prompt, "answer": answer})
-    st.experimental_rerun()
+    st.rerun()
