@@ -178,14 +178,11 @@ if len(st.session_state.chat_history) == 0:
 else:
     prompt = st.text_input("Nachfrage eingeben:", key=f"input_{len(st.session_state.chat_history)}")
 
-if prompt:
+absenden = st.button("Absenden")
+
+if absenden and prompt:
     # Kontext für die KI: Alle bisherigen Antworten + Index
-    if len(st.session_state.chat_history) == 0:
-        context_df = st.session_state.combined_df
-    else:
-        # Kontext: Bisherige Antworten + Indexdaten
-        context_df = st.session_state.combined_df
-    # Kontext auf max. 5000 Zeichen beschränken (API-Limit)
+    context_df = st.session_state.combined_df
     context = context_df[['volltextindex', 'quelle']].to_string(index=False)
     context = context[:5000]
     with st.spinner("Antwort wird generiert ..."):
