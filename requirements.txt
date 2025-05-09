@@ -16,3 +16,8 @@ docx2txt
 llama-index-readers-web
 trafilatura
 requests
+zipfile
+io
+os
+json
+re
