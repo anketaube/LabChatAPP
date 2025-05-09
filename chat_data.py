@@ -1,167 +1,145 @@
 import streamlit as st
-import pandas as pd
-import httpx
-from parsel import Selector
+import json
+import uuid
 import re
-from urllib.parse import urljoin
+import shutil
+import os
+import zipfile
+import requests
+import io
 
-# Basis-URL und Wunsch-URLs
-BASE_URL = "https://www.dnb.de/DE/Professionell/Services/WissenschaftundForschung/DNBLab"
-START_URL = BASE_URL + "/dnblab_node.html"
-EXTRA_URLS = [
-    "https://www.dnb.de/DE/Professionell/Services/WissenschaftundForschung/DNBLab/dnblabTutorials.html?nn=849628",
-    "https://www.dnb.de/DE/Professionell/Services/WissenschaftundForschung/DNBLabPraxis/dnblabPraxis_node.html",
-    "https://www.dnb.de/DE/Professionell/Services/WissenschaftundForschung/DNBLab/dnblabSchnittstellen.html?nn=849628",
-    "https://www.dnb.de/DE/Professionell/Services/WissenschaftundForschung/DNBLab/dnblabFreieDigitaleObjektsammlung.html?nn=849628"
-    # Weitere Wunsch-URLs einfach ergÃ¤nzen!
-]
+from llama_index.readers.web import TrafilaturaWebReader
+from llama_index.core.node_parser import SimpleNodeParser
+from llama_index.core.schema import TextNode
+from llama_index.core import VectorStoreIndex
 
-st.sidebar.title("Konfiguration")
-data_source = st.sidebar.radio("Datenquelle wÃ¤hlen:", ["Excel-Datei", "DNBLab-Webseite"])
+st.set_page_config(page_title="DNB Lab Index Generator", layout="wide")
+st.title("DNB Lab: JSON- und Vektorindex aus URLs erzeugen oder vorberechneten Index nutzen")
 
-chatgpt_model = st.sidebar.selectbox(
-    "ChatGPT Modell wÃ¤hlen",
-    options=["gpt-3.5-turbo", "gpt-4-turbo"],
-    index=1
-)
-st.sidebar.markdown(f"Verwendetes Modell: **{chatgpt_model}**")
+# --- Hilfsfunktionen ---
 
-if "OPENAI_API_KEY" not in st.secrets:
-    st.error("API-Key fehlt. Bitte in den Streamlit-Secrets hinterlegen.")
-    st.stop()
-api_key = st.secrets["OPENAI_API_KEY"]
+def is_valid_id(id_value):
+    return isinstance(id_value, str) and id_value.strip() != ""
 
-@st.cache_data(show_spinner=True)
-def crawl_dnblab():
-    client = httpx.Client(timeout=10, follow_redirects=True)
-    visited = set()
-    to_visit = set([START_URL] + EXTRA_URLS)
-    data = []
+def create_rich_nodes(urls):
+    documents = TrafilaturaWebReader().load_data(urls)
+    parser = SimpleNodeParser()
+    nodes = []
+    for url, doc in zip(urls, documents):
+        doc.metadata["source"] = url
+        doc.metadata["title"] = doc.metadata.get("title", "")
+        for node in parser.get_nodes_from_documents([doc]):
+            node_id = node.node_id if is_valid_id(node.node_id) else str(uuid.uuid4())
+            if node.text and node.text.strip():
+                chunk_metadata = dict(node.metadata)
+                chunk_metadata["source"] = url
+                nodes.append(TextNode(
+                    text=node.text,
+                    metadata=chunk_metadata,
+                    id_=node_id
+                ))
+    return nodes
 
-    while to_visit:
-        url = to_visit.pop()
-        if url in visited:
-            continue
-        visited.add(url)
-        try:
-            resp = client.get(url)
-            if resp.status_code != 200:
-                continue
-            selector = Selector(resp.text)
-            # Hauptinhalt extrahieren
-            content = ' '.join(selector.xpath(
-                '//main//text() | //div[@role="main"]//text() | //body//text() | //article//text() | //section//text() | //p//text() | //li//text()'
-            ).getall())
-            content = re.sub(r'\s+', ' ', content).strip()
-            if content and len(content) > 50:
-                data.append({
-                    'datensetname': f"Web-Inhalt: {url}",
-                    'volltextindex': content,
-                    'quelle': url
-                })
-            # Interne Links sammeln
-            for link in selector.xpath('//a/@href').getall():
-                full_url = urljoin(url, link).split('#')[0]
-                if (
-                    full_url.startswith(BASE_URL)
-                    and full_url not in visited
-                    and full_url not in to_visit
-                ):
-                    to_visit.add(full_url)
-        except Exception as e:
-            st.warning(f"Fehler beim Crawlen von {url}: {e}")
+def index_to_rich_json(nodes):
+    export = []
+    for node in nodes:
+        if is_valid_id(node.node_id) and node.text and node.text.strip():
+            export.append({
+                "id": node.node_id,
+                "text": node.text,
+                "metadata": node.metadata,
+            })
+    return json.dumps(export, ensure_ascii=False, indent=2)
 
-    if data:
-        df = pd.DataFrame(data)
-        df.columns = df.columns.str.strip().str.lower()
-        return df
+def zip_directory(folder_path, zip_path):
+    with zipfile.ZipFile(zip_path, 'w', zipfile.ZIP_DEFLATED) as zipf:
+        for root, dirs, files in os.walk(folder_path):
+            for file in files:
+                abs_path = os.path.join(root, file)
+                rel_path = os.path.relpath(abs_path, folder_path)
+                zipf.write(abs_path, rel_path)
+
+# --- NEU: Funktionen zum Laden des vorberechneten Index aus GitHub ---
+
+GITHUB_ZIP_URL = "https://github.com/anketaube/LabChatAPP/raw/main/dnblab_index.zip"
+
+def download_and_extract_zip(url, extract_to="vektor_index"):
+    response = requests.get(url)
+    if response.status_code == 200:
+        z = zipfile.ZipFile(io.BytesIO(response.content))
+        z.extractall(extract_to)
+        return True
     else:
-        return None
+        st.error("Fehler beim Laden der Vektor-Index ZIP von GitHub.")
+        return False
 
-@st.cache_data
-def load_excel(file):
-    try:
-        xls = pd.ExcelFile(file)
-        df = pd.read_excel(xls, sheet_name=xls.sheet_names[0], header=0, na_filter=False)
-        df['volltextindex'] = df.apply(lambda row: ' | '.join(str(cell) for cell in row if pd.notnull(cell)), axis=1)
-        df['quelle'] = "Excel-Datei"
-        df.columns = df.columns.str.strip().str.lower()
-        return df
-    except Exception as e:
-        st.error(f"Fehler beim Laden der Excel-Datei: {e}")
-        return None
+def load_vector_json(folder_path):
+    vectors = []
+    for root, dirs, files in os.walk(folder_path):
+        for file in files:
+            if file.endswith(".json"):
+                with open(os.path.join(root, file), "r", encoding="utf-8") as f:
+                    vectors.extend(json.load(f))
+    return vectors
 
-def full_text_search(df, query):
-    try:
-        mask = df['volltextindex'].str.lower().str.contains(query.lower())
-        return df[mask]
-    except Exception:
-        return pd.DataFrame()
+# --- UI ---
 
-def ask_question(question, context, model):
-    try:
-        from openai import OpenAI
-        client = OpenAI(api_key=api_key)
-        prompt = f"""
-Du bist ein Datenexperte fÃ¼r die DNB-DatensÃ¤tze.
-Hier sind die Daten mit Quellenangaben:
-{context}
+quelle = st.selectbox("Quelle wählen", ["URLs eingeben und Index erzeugen", "Webseiten (vorberechneter Index aus GitHub)"])
 
-Beantworte die folgende Frage basierend auf den Daten oben in ganzen SÃ¤tzen.
-Gib immer die Quelle der Information an (entweder Excel-Datei oder Web-URL).
-Frage: {question}
-"""
-        response = client.chat.completions.create(
-            model=model,
-            messages=[{"role": "user", "content": prompt}],
-            temperature=0.3
-        )
-        return response.choices[0].message.content
-    except Exception as e:
-        st.error(f"Fehler bei OpenAI API-Abfrage: {e}")
-        return "Fehler bei der Anfrage."
+if quelle == "URLs eingeben und Index erzeugen":
+    st.header("Schritt 1: URLs eingeben und Index erzeugen")
+    urls_input = st.text_area("Neue URLs (eine pro Zeile):")
+    urls = [u.strip() for u in urls_input.split('\n') if u.strip()]
 
-st.title("DNBLab-Chatbot")
-
-df = None
-
-if data_source == "Excel-Datei":
-    uploaded_file = st.sidebar.file_uploader("Excel-Datei hochladen", type=["xlsx"])
-    if uploaded_file:
-        with st.spinner("Excel-Datei wird geladen..."):
-            df = load_excel(uploaded_file)
-elif data_source == "DNBLab-Webseite":
-    st.sidebar.info("Es wird die DNBLab-Webseite inkl. aller Unterseiten indexiert. Das kann einige Sekunden dauern.")
-    with st.spinner("DNBLab-Webseite wird indexiert..."):
-        df = crawl_dnblab()
-
-if df is None or df.empty:
-    st.info("Bitte laden Sie eine Excel-Datei hoch oder wÃ¤hlen Sie die DNBLab-Webseite aus der Sidebar.")
-else:
-    st.write(f"Geladene DatensÃ¤tze: {len(df)}")
-    st.markdown("**Folgende Seiten wurden indexiert:**")
-    for url in sorted(df['quelle'].unique()):
-        st.markdown(f"- [{url}]({url})")
-    query = st.text_input("Suchbegriff oder Frage eingeben:")
-    if query:
-        question_words = ["wie", "was", "welche", "wann", "warum", "wo", "wieviel", "wieviele", "zÃ¤hl", "nenn", "gibt", "zeige"]
-        is_question = any(query.lower().startswith(word) for word in question_words)
-        if is_question:
-            context = df[['volltextindex', 'quelle']].to_string(index=False)
-            with st.spinner("Frage wird analysiert..."):
-                answer = ask_question(query, context, chatgpt_model)
-            st.subheader("Antwort des Sprachmodells:")
-            st.write(answer)
+    if urls and st.button("Index aus URLs erzeugen"):
+        with st.spinner("Indexiere URLs..."):
+            nodes = create_rich_nodes(urls)
+        if not nodes:
+            st.error("Keine gültigen Chunks aus den URLs extrahiert.")
         else:
-            results = full_text_search(df, query)
-            if not results.empty:
-                st.subheader("Suchergebnisse")
-                display_cols = ['quelle'] + [col for col in ['datensetname', 'datenformat', 'kategorie 1', 'kategorie 2'] if col in results.columns]
-                st.dataframe(results[display_cols] if display_cols else results)
-                context = results[['volltextindex', 'quelle']].to_string(index=False)
-                with st.spinner("Analysiere Treffer..."):
-                    answer = ask_question(query, context, chatgpt_model)
-                st.subheader("ErgÃ¤nzende Antwort des Sprachmodells:")
-                st.write(answer)
-            else:
-                st.warning("Keine Treffer gefunden.")
+            st.session_state.generated_nodes = nodes
+            st.success(f"{len(nodes)} Chunks erzeugt!")
+
+    # Download JSON
+    if "generated_nodes" in st.session_state and st.session_state.generated_nodes:
+        json_data = index_to_rich_json(st.session_state.generated_nodes)
+        st.download_button(
+            label="Index als JSON herunterladen (dnblab_index.json)",
+            data=json_data,
+            file_name="dnblab_index.json",
+            mime="application/json"
+        )
+
+        st.header("Schritt 2: Vektorindex erzeugen und herunterladen")
+        if st.button("Vektorindex aus erzeugtem JSON bauen"):
+            with st.spinner("Erzeuge Vektorindex... (kann einige Minuten dauern)"):
+                index = VectorStoreIndex(st.session_state.generated_nodes)
+                persist_dir = "dnblab_index"
+                if os.path.exists(persist_dir):
+                    shutil.rmtree(persist_dir)
+                index.storage_context.persist(persist_dir=persist_dir)
+                # Zippe das Verzeichnis für den Download
+                zip_path = "dnblab_index.zip"
+                zip_directory(persist_dir, zip_path)
+                with open(zip_path, "rb") as f:
+                    st.download_button(
+                        label="Vektorindex herunterladen (dnblab_index.zip)",
+                        data=f,
+                        file_name="dnblab_index.zip",
+                        mime="application/zip"
+                    )
+                st.success("Vektorindex wurde erzeugt und steht zum Download bereit!")
+                # Optional: Aufräumen
+                # shutil.rmtree(persist_dir)
+                # os.remove(zip_path)
+
+elif quelle == "Webseiten (vorberechneter Index aus GitHub)":
+    st.header("Vorberechneten Vektorindex aus GitHub laden")
+    if st.button("Vektorindex laden"):
+        with st.spinner("Lade und entpacke Vektorindex von GitHub..."):
+            if download_and_extract_zip(GITHUB_ZIP_URL):
+                vektoren = load_vector_json("vektor_index")
+                st.success(f"{len(vektoren)} Vektoren geladen!")
+                # Hier kannst du die geladenen Vektoren weiterverarbeiten,
+                # z.B. Suchfunktion, Anzeige, etc.
+                st.write(vektoren[:3])  # Beispiel: zeige die ersten 3 Vektoren
