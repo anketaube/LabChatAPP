@@ -5,9 +5,6 @@ import zipfile
 import io
 import os
 import json
-import re
-
-from urllib.parse import urljoin
 
 st.sidebar.title("Konfiguration")
 
@@ -27,7 +24,6 @@ if "OPENAI_API_KEY" not in st.secrets:
 
 api_key = st.secrets["OPENAI_API_KEY"]
 
-# Hilfsfunktion: Lade und entpacke ZIP von GitHub
 @st.cache_data(show_spinner=True)
 def load_vector_json_from_github():
     ZIP_URL = "https://github.com/anketaube/LabChatAPP/raw/main/dnblab_index.zip"
@@ -44,14 +40,21 @@ def load_vector_json_from_github():
         for file in files:
             if file.endswith(".json"):
                 with open(os.path.join(root, file), "r", encoding="utf-8") as f:
-                    json_data = json.load(f)
-                    # Erwarte: Liste von Dicts mit keys: id, text, metadata
-                    for entry in json_data:
-                        data.append({
-                            'datensetname': entry.get('metadata', {}).get('title', 'Web-Inhalt'),
-                            'volltextindex': entry.get('text', ''),
-                            'quelle': entry.get('metadata', {}).get('source', ''),
-                        })
+                    try:
+                        json_data = json.load(f)
+                        # Robust: Liste oder einzelnes Dict
+                        if isinstance(json_data, dict):
+                            json_data = [json_data]
+                        if isinstance(json_data, list):
+                            for entry in json_data:
+                                if isinstance(entry, dict):
+                                    data.append({
+                                        'datensetname': entry.get('metadata', {}).get('title', 'Web-Inhalt'),
+                                        'volltextindex': entry.get('text', ''),
+                                        'quelle': entry.get('metadata', {}).get('source', ''),
+                                    })
+                    except Exception as e:
+                        st.warning(f"Fehler beim Parsen von {file}: {e}")
     if data:
         df = pd.DataFrame(data)
         df.columns = df.columns.str.strip().str.lower()
