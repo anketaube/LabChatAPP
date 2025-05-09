@@ -13,3 +13,6 @@ PyPDF2
 python-docx
 lxml
 docx2txt
+llama-index-readers-web
+trafilatura
+requests
