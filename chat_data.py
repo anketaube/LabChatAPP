@@ -13,23 +13,22 @@ EXTRA_URLS = [
     "https://www.dnb.de/DE/Professionell/Services/WissenschaftundForschung/DNBLabPraxis/dnblabPraxis_node.html",
     "https://www.dnb.de/DE/Professionell/Services/WissenschaftundForschung/DNBLab/dnblabSchnittstellen.html?nn=849628",
     "https://www.dnb.de/DE/Professionell/Services/WissenschaftundForschung/DNBLab/dnblabFreieDigitaleObjektsammlung.html?nn=849628"
-    # Weitere Wunsch-URLs einfach ergÃ¤nzen!
+    # Weitere Wunsch-URLs einfach ergänzen!
 ]
 
 st.sidebar.title("Konfiguration")
-data_source = st.sidebar.radio("Datenquelle wÃ¤hlen:", ["Excel-Datei", "DNBLab-Webseite"])
-
-chatgpt_model = st.sidebar.selectbox(
-    "ChatGPT Modell wÃ¤hlen",
-    options=["gpt-3.5-turbo", "gpt-4-turbo"],
+data_source = st.sidebar.radio("Datenquelle wählen:", ["Excel-Datei", "DNBLab-Webseite"])
+mistral_model = st.sidebar.selectbox(
+    "Mistral Modell wählen",
+    options=["mistral-small", "mistral-medium", "mistral-large"],
     index=1
 )
-st.sidebar.markdown(f"Verwendetes Modell: **{chatgpt_model}**")
+st.sidebar.markdown(f"Verwendetes Modell: **{mistral_model}**")
 
-if "OPENAI_API_KEY" not in st.secrets:
-    st.error("API-Key fehlt. Bitte in den Streamlit-Secrets hinterlegen.")
+if "MISTRAL_API_KEY" not in st.secrets:
+    st.error("Mistral API-Key fehlt. Bitte in den Streamlit-Secrets hinterlegen (MISTRAL_API_KEY).")
     st.stop()
-api_key = st.secrets["OPENAI_API_KEY"]
+api_key = st.secrets["MISTRAL_API_KEY"]
 
 @st.cache_data(show_spinner=True)
 def crawl_dnblab():
@@ -37,7 +36,6 @@ def crawl_dnblab():
     visited = set()
     to_visit = set([START_URL] + EXTRA_URLS)
     data = []
-
     while to_visit:
         url = to_visit.pop()
         if url in visited:
@@ -70,7 +68,6 @@ def crawl_dnblab():
                     to_visit.add(full_url)
         except Exception as e:
             st.warning(f"Fehler beim Crawlen von {url}: {e}")
-
     if data:
         df = pd.DataFrame(data)
         df.columns = df.columns.str.strip().str.lower()
@@ -100,25 +97,26 @@ def full_text_search(df, query):
 
 def ask_question(question, context, model):
     try:
-        from openai import OpenAI
-        client = OpenAI(api_key=api_key)
+        from mistralai.client import MistralClient
+        client = MistralClient(api_key=api_key)
         prompt = f"""
-Du bist ein Datenexperte fÃ¼r die DNB-DatensÃ¤tze.
+Du bist ein Datenexperte für die DNB-Datensätze.
 Hier sind die Daten mit Quellenangaben:
+
 {context}
 
-Beantworte die folgende Frage basierend auf den Daten oben in ganzen SÃ¤tzen.
+Beantworte die folgende Frage basierend auf den Daten oben in ganzen Sätzen.
 Gib immer die Quelle der Information an (entweder Excel-Datei oder Web-URL).
 Frage: {question}
 """
-        response = client.chat.completions.create(
+        response = client.chat(
             model=model,
             messages=[{"role": "user", "content": prompt}],
             temperature=0.3
         )
         return response.choices[0].message.content
     except Exception as e:
-        st.error(f"Fehler bei OpenAI API-Abfrage: {e}")
+        st.error(f"Fehler bei Mistral API-Abfrage: {e}")
         return "Fehler bei der Anfrage."
 
 st.title("DNBLab-Chatbot")
@@ -136,20 +134,23 @@ elif data_source == "DNBLab-Webseite":
         df = crawl_dnblab()
 
 if df is None or df.empty:
-    st.info("Bitte laden Sie eine Excel-Datei hoch oder wÃ¤hlen Sie die DNBLab-Webseite aus der Sidebar.")
+    st.info("Bitte laden Sie eine Excel-Datei hoch oder wählen Sie die DNBLab-Webseite aus der Sidebar.")
 else:
-    st.write(f"Geladene DatensÃ¤tze: {len(df)}")
+    st.write(f"Geladene Datensätze: {len(df)}")
     st.markdown("**Folgende Seiten wurden indexiert:**")
     for url in sorted(df['quelle'].unique()):
         st.markdown(f"- [{url}]({url})")
+
     query = st.text_input("Suchbegriff oder Frage eingeben:")
+
     if query:
-        question_words = ["wie", "was", "welche", "wann", "warum", "wo", "wieviel", "wieviele", "zÃ¤hl", "nenn", "gibt", "zeige"]
+        question_words = ["wie", "was", "welche", "wann", "warum", "wo", "wieviel", "wieviele", "zähl", "nenn", "gibt", "zeige"]
         is_question = any(query.lower().startswith(word) for word in question_words)
+
         if is_question:
             context = df[['volltextindex', 'quelle']].to_string(index=False)
             with st.spinner("Frage wird analysiert..."):
-                answer = ask_question(query, context, chatgpt_model)
+                answer = ask_question(query, context, mistral_model)
             st.subheader("Antwort des Sprachmodells:")
             st.write(answer)
         else:
@@ -160,8 +161,8 @@ else:
                 st.dataframe(results[display_cols] if display_cols else results)
                 context = results[['volltextindex', 'quelle']].to_string(index=False)
                 with st.spinner("Analysiere Treffer..."):
-                    answer = ask_question(query, context, chatgpt_model)
-                st.subheader("ErgÃ¤nzende Antwort des Sprachmodells:")
+                    answer = ask_question(query, context, mistral_model)
+                st.subheader("Ergänzende Antwort des Sprachmodells:")
                 st.write(answer)
             else:
                 st.warning("Keine Treffer gefunden.")
